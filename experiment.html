@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Imperil-Protect-Web-Prototype</title>
+    <script src="https://unpkg.com/jspsych@8.3.0"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-html-keyboard-response@2.2.0"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-image-keyboard-response@2.2.0"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-preload@2.1.0"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-call-function@2.1.0"></script>
+    <script src="jspsych-psychophysics-v.5.1.0/jspsych-psychophysics.js"></script>
+    <link href="https://unpkg.com/jspsych@8.3.0/css/jspsych.css" rel="stylesheet" type="text/css" />
+    <style>
+      canvas { display: block; width: 100vw !important; height: 100vh !important; }
+      html, body { height: 100%; overflow: hidden; }
+      #loadscreen {
+        position: fixed; inset: 0; display: flex;
+        align-items: center; justify-content: center;
+        font-family: sans-serif; font-size: 18px;
+        background: rgb(128,128,128); color: #fff; z-index: 9999;
+      }
+      #loadscreen.hidden { display: none; }
+    </style>
+  </head>
+  <body>
+  <div id="loadscreen">Starting&hellip;</div>
+  <script>
+
+/* ==================================================================== *
+ *  CONFIG                                                              *
+ * ==================================================================== */
+
+const IMG_ROOT = 'studyObjectsRotatedVars';
+const IMG_EXT  = '.png';
+
+// How a stim's folder is named. Set to null if every png sits directly
+// inside IMG_ROOT with no per-stim subfolder.
+//   default -> studyObjectsRotatedVars/stim305/stim_305_deg_78.png
+//   null    -> studyObjectsRotatedVars/stim_305_deg_78.png
+const DIR_FOR = id => `stim${padStim(id)}`;
+
+// Degree numbering in the filenames. Verified/overridden at runtime from
+// imageMatrix: if a deg_0 turns up, HUE_MIN drops to 0 automatically.
+let HUE_MIN = 1;
+let N_HUES  = 359;
+
+const BLOCK_SIZE  = 6;
+const PREFETCH    = 1;
+const CONCURRENCY = 12;
+const COARSE_STEP = 1;
+
+const PROBE_SCALE = 0.5;
+const STUDY_SCALE = 0.5;
+
+const WHEEL_DIR    = -1;
+const WHEEL_OFFSET = 90;
+
+const REQUIRE_INSIDE_RING = false;
+const RING_INNER = 60;
+const RING_OUTER = 400;
+
+const contextColors = ['rgb(165, 127, 151)', 'rgb(135, 174, 116)'];
+const startContext  = Math.round(Math.random());
+
+
+
+/* ==================================================================== *
+ *  MATLAB CELL RESHAPE                                                 *
+ *                                                                      *
+ *  jsonencode flattens a cell array column-major, so a 900x3 cell      *
+ *  arrives as 2700 loose strings. Numeric matrices keep their rows,    *
+ *  which is why conditionMatrix looks fine and this one does not.      *
+ * ==================================================================== */
+
+function normalizeImageMatrix(raw, nTrials) {
+  if (!Array.isArray(raw)) raw = Object.values(raw);
+
+  // Already nested (one array per trial) - nothing to do.
+  if (Array.isArray(raw[0])) {
+    if (raw.length !== nTrials) {
+      throw new Error(`imageMatrix has ${raw.length} rows, conditionMatrix has ${nTrials}`);
+    }
+    console.log('imageMatrix: already nested, used as-is');
+    return raw.map(r => r.slice(0, 3));
+  }
+
+  if (raw.length !== 3 * nTrials) {
+    throw new Error(
+      `imageMatrix has ${raw.length} entries; expected ${3 * nTrials} ` +
+      `(3 x ${nTrials} trials) or ${nTrials} nested rows.`
+    );
+  }
+
+  const colMajor = Array.from({ length: nTrials }, (_, i) =>
+    [raw[i], raw[i + nTrials], raw[i + 2 * nTrials]]);
+  const rowMajor = Array.from({ length: nTrials }, (_, i) =>
+    [raw[3 * i], raw[3 * i + 1], raw[3 * i + 2]]);
+
+  // The repeated items hold still across a mini-block; the novel item does
+  // not. Whichever reshape reproduces that is the right one.
+  const score = m => {
+    let hits = 0, total = 0;
+    for (let b = 0; b + BLOCK_SIZE <= m.length; b += BLOCK_SIZE) {
+      total++;
+      const head = m[b];
+      const held = m.slice(b, b + BLOCK_SIZE)
+                    .every(r => r[0] === head[0] && r[1] === head[1]);
+      const moves = new Set(m.slice(b, b + BLOCK_SIZE).map(r => r[2])).size > 1;
+      if (held && moves) hits++;
+    }
+    return total ? hits / total : 0;
+  };
+
+  const sCol = score(colMajor), sRow = score(rowMajor);
+  console.log(`imageMatrix reshape: column-major ${(sCol * 100).toFixed(0)}%, ` +
+              `row-major ${(sRow * 100).toFixed(0)}% of blocks consistent`);
+
+  if (Math.max(sCol, sRow) < 0.9) {
+    console.warn('Neither reshape matches the expected 2-repeats + 1-novel ' +
+                 'block structure. Check BLOCK_SIZE and the export.');
+  }
+  return sCol >= sRow ? colMajor : rowMajor;
+}
+
+/* ==================================================================== *
+ *  IMAGE CACHE                                                         *
+ * ==================================================================== */
+
+const imgCache = new Map();   // url -> Image (null if it 404'd)
+const pending  = new Map();   // url -> Promise, dedupes in-flight requests
+
+function loadUrl(url) {
+  if (imgCache.has(url)) return Promise.resolve(imgCache.get(url));
+  if (pending.has(url))  return pending.get(url);
+
+  const p = new Promise(resolve => {
+    const img = new Image();
+    img.onload  = () => { imgCache.set(url, img);  pending.delete(url); resolve(img); };
+    img.onerror = () => {
+      console.warn('Missing image:', url);
+      imgCache.set(url, null); pending.delete(url); resolve(null);
+    };
+    img.src = url;
+  });
+
+  pending.set(url, p);
+  return p;
+}
+
+async function loadUrls(urls, onProgress) {
+  const todo = urls.filter(u => !imgCache.has(u));
+  if (!todo.length) return;
+
+  let next = 0, done = 0;
+  const worker = async () => {
+    while (next < todo.length) {
+      await loadUrl(todo[next++]);
+      if (onProgress) onProgress(++done, todo.length);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, todo.length) }, worker));
+}
+
+function evictExcept(keepSet) {
+  let freed = 0;
+  for (const [url, img] of imgCache) {
+    if (keepSet.has(url) || pending.has(url)) continue;
+    if (img) img.src = '';   // makes the decoded bitmap collectable
+    imgCache.delete(url);
+    freed++;
+  }
+  if (freed) console.log(`evicted ${freed} frames; ${imgCache.size} resident`);
+}
+
+const getImg = url => imgCache.get(url) || null;
+
+function wheelImg(stimId, i) {
+  const span = Math.max(1, COARSE_STEP);
+  for (let d = 0; d <= span; d++) {
+    for (const j of (d === 0 ? [i] : [i - d, i + d])) {
+      const k = ((j % N_HUES) + N_HUES) % N_HUES;
+      const img = getImg(pathFor(stimId, k));
+      if (img) return { img, index: k };
+    }
+  }
+  return null;
+}
+
+/* ==================================================================== *
+ *  CURSOR STATE                                                        *
+ * ==================================================================== */
+
+const wheel = {
+  angle: null, radius: null,
+  index: 0, startIndex: 0, shownIndex: 0,
+  probeId: null, detach: null
+};
+
+const studyState = { urls: [null, null, null] };
+
+const angleToHue = deg =>
+  ((Math.round(WHEEL_DIR * deg + WHEEL_OFFSET) % N_HUES) + N_HUES) % N_HUES;
+
+function attachTracker() {
+  const canvas = document.querySelector('canvas');
+  if (!canvas) return;
+  const box = canvas.getBoundingClientRect();
+  const sx = canvas.width / box.width, sy = canvas.height / box.height;
+  const cx = box.left + box.width / 2, cy = box.top + box.height / 2;
+
+  function onMove(e) {
+    const x =  (e.clientX - cx) * sx;
+    const y = -(e.clientY - cy) * sy;
+    wheel.radius = Math.hypot(x, y);
+    wheel.angle  = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    if (REQUIRE_INSIDE_RING &&
+        (wheel.radius < RING_INNER || wheel.radius > RING_OUTER)) return;
+    wheel.index = angleToHue(wheel.angle);
+  }
+
+  canvas.addEventListener('pointermove', onMove);
+  wheel.detach = () => canvas.removeEventListener('pointermove', onMove);
+}
+
+/* ==================================================================== *
+ *  LOADING OVERLAY                                                     *
+ * ==================================================================== */
+
+const loadEl = document.getElementById('loadscreen');
+const showLoading = text => {
+  if (!loadEl) return;
+  loadEl.classList.remove('hidden');
+  loadEl.textContent = text;
+};
+const hideLoading = () => loadEl && loadEl.classList.add('hidden');
+
+/* ==================================================================== *
+ *  EXPERIMENT                                                          *
+ * ==================================================================== */
+
+async function runExperiment() {
+
+  showLoading('Loading condition files\u2026');
+
+  const [conditionMatrix, rawImageMatrix] = await Promise.all([
+    fetch('conditionMatrix.json').then(r => r.json()),
+    fetch('imageMatrix.json').then(r => r.json())
+  ]);
+
+  const nTrials = conditionMatrix.length;
+  const imageMatrix = normalizeImageMatrix(rawImageMatrix, nTrials);
+
+  inferNaming(imageMatrix.flat());
+
+  /* ---- timeline variables ---- */
+
+  let unmatchedProbes = 0;
+
+  const timelineVars = conditionMatrix.map((row, i) => {
+    const [rep, context, rep1color, rep2color, novel, theta, probe,
+           pos1x, pos1y, pos2x, pos2y, pos3x, pos3y] = row;
+
+    const names  = imageMatrix[i];
+    const parsed = names.map(parseName);
+    const probeId = Number(probe);
+
+    // Score against the studied hue of whichever item is probed.
+    const hit = parsed.find(p => p.stimId === probeId);
+    if (!hit) unmatchedProbes++;
+    const targetHue = hit ? hit.hueIndex
+                          : (rep1color != null ? Number(rep1color) : null);
+
+    return {
+      rep, context, rep1color, rep2color, novel, theta,
+      probe: probeId, targetHue,
+      pos1x, pos1y, pos2x, pos2y, pos3x, pos3y,
+      url1: pathFor(parsed[0].stimId, parsed[0].hueIndex),
+      url2: pathFor(parsed[1].stimId, parsed[1].hueIndex),
+      url3: pathFor(parsed[2].stimId, parsed[2].hueIndex)
+    };
+  });
+
+  if (unmatchedProbes) {
+    console.warn(`${unmatchedProbes}/${nTrials} trials: the probe id in ` +
+                 `conditionMatrix column 7 is not one of that trial's three ` +
+                 `images. Scoring fell back to rep1color on those trials.`);
+  }
+
+  /* ---- blocks ---- */
+
+  const blocks = [];
+  for (let i = 0; i < timelineVars.length; i += BLOCK_SIZE) {
+    blocks.push(timelineVars.slice(i, i + BLOCK_SIZE));
+  }
+
+  const blockStudyUrls = blocks.map(vars => {
+    const s = new Set();
+    for (const v of vars) { s.add(v.url1); s.add(v.url2); s.add(v.url3); }
+    return [...s];
+  });
+
+  const blockWheelUrls = blocks.map(vars => {
+    const ids = [...new Set(vars.map(v => v.probe))];
+    const coarse = [], fine = [];
+    for (const id of ids) {
+      for (let i = 0; i < N_HUES; i++) {
+        (i % COARSE_STEP === 0 ? coarse : fine).push(pathFor(id, i));
+      }
+    }
+    return { coarse, fine, all: coarse.concat(fine) };
+  });
+
+  const blockAllUrls = blocks.map((_, k) =>
+    blockStudyUrls[k].concat(blockWheelUrls[k].all));
+
+  console.log(`${nTrials} trials in ${blocks.length} blocks; block 0 needs ` +
+              `${blockAllUrls[0].length} frames ` +
+              `(${blockWheelUrls[0].coarse.length} before it can start)`);
+
+  function blockLoader(k) {
+    return {
+      type: jsPsychCallFunction,
+      async: true,
+      func: async function(done) {
+        const need = blockStudyUrls[k].concat(blockWheelUrls[k].coarse)
+                       .filter(u => !imgCache.has(u)).length;
+        if (need) showLoading(`Loading block ${k + 1} of ${blocks.length}\u2026 0/${need}`);
+
+        await loadUrls(blockStudyUrls[k]);
+        await loadUrls(blockWheelUrls[k].coarse, (n, total) => {
+          showLoading(`Loading block ${k + 1} of ${blocks.length}\u2026 ${n}/${total}`);
+        });
+
+        hideLoading();
+        done();                        // block starts here
+
+        const keep = new Set();
+        for (let j = k; j <= k + PREFETCH && j < blocks.length; j++) {
+          blockAllUrls[j].forEach(u => keep.add(u));
+        }
+        evictExcept(keep);
+
+        if (COARSE_STEP > 1) loadUrls(blockWheelUrls[k].fine).catch(console.warn);
+        for (let j = k + 1; j <= k + PREFETCH && j < blocks.length; j++) {
+          loadUrls(blockStudyUrls[j]).catch(console.warn);
+          loadUrls(blockWheelUrls[j].coarse).catch(console.warn);
+        }
+      }
+    };
+  }
+
+  /* ---- trials ---- */
+
+  const jsPsych = initJsPsych();
+  const timeline = [];
+
+  const ctxColor = () => {
+    const raw = jsPsych.evaluateTimelineVariable('context');
+    const idx = (raw === null || raw === undefined || raw === '')
+      ? startContext : Number(raw);
+    return contextColors[idx] ?? contextColors[0];
+  };
+
+  const studyItem = (slot, urlKey, xKey, yKey) => ({
+    obj_type: 'image',
+    file:   function() { return jsPsych.evaluateTimelineVariable(urlKey); },
+    origin_center: true,
+    startX: function() { return Number(jsPsych.evaluateTimelineVariable(xKey)); },
+    startY: function() { return Number(jsPsych.evaluateTimelineVariable(yKey)); },
+    scale: STUDY_SCALE,
+    show_start_time: 0,
+    show_end_time: 800,
+    // Draw the copy we already decoded rather than one the plugin may still
+    // be fetching.
+    change_attr: function(stim) {
+      const url = studyState.urls[slot];
+      if (!url) return;
+      const img = getImg(url);
+      if (img && stim.img !== img) { stim.img = img; stim.file = url; }
+    }
+  });
+
+  const study = {
+    type: jsPsychPsychophysics,
+    canvas_width: window.innerWidth,
+    canvas_height: window.innerHeight,
+    stimuli: [
+      { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+        fill_color: ctxColor, show_start_time: 0 },
+      studyItem(0, 'url1', 'pos1x', 'pos1y'),
+      studyItem(1, 'url2', 'pos2x', 'pos2y'),
+      studyItem(2, 'url3', 'pos3x', 'pos3y')
+    ],
+    choices: "NO_KEYS",
+    trial_duration: 1900,
+    on_start: function() {
+      studyState.urls = [
+        jsPsych.evaluateTimelineVariable('url1'),
+        jsPsych.evaluateTimelineVariable('url2'),
+        jsPsych.evaluateTimelineVariable('url3')
+      ];
+    }
+  };
+
+  const test = {
+    type: jsPsychPsychophysics,
+    canvas_width: window.innerWidth,
+    canvas_height: window.innerHeight,
+    stimuli: [
+      { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+        fill_color: ctxColor, show_start_time: 0 },
+      { obj_type: 'circle', radius: 200, line_color: 'black',
+        show_start_time: 0, show_end_time: 4000 },
+      { obj_type: 'image',
+        file: function() {
+          return pathFor(Number(jsPsych.evaluateTimelineVariable('probe')), 0);
+        },
+        origin_center: true,
+        scale: PROBE_SCALE,
+        show_start_time: 0,
+        show_end_time: 4000,
+        change_attr: function(stim) {
+          if (wheel.probeId == null) return;
+          const hit = wheelImg(wheel.probeId, wheel.index);
+          if (!hit || stim.img === hit.img) return;
+          stim.img  = hit.img;
+          stim.file = hit.img.src;
+          wheel.shownIndex = hit.index;
+        }
+      }
+    ],
+    response_type: 'mouse',
+    response_start_time: 0,
+    trial_duration: 4300,
+
+    on_start: function() {
+      wheel.probeId    = Number(jsPsych.evaluateTimelineVariable('probe'));
+      wheel.startIndex = Math.floor(Math.random() * N_HUES);
+      wheel.index      = wheel.startIndex;
+      wheel.shownIndex = wheel.startIndex;
+      wheel.angle      = null;
+      wheel.radius     = null;
+    },
+
+    on_load: function() { attachTracker(); },
+
+    on_finish: function(data) {
+      if (wheel.detach) { wheel.detach(); wheel.detach = null; }
+
+      data.probe_stim    = wheel.probeId;
+      data.start_hue     = wheel.startIndex;
+      data.response_hue  = wheel.index;
+      data.displayed_hue = wheel.shownIndex;
+      data.cursor_angle  = wheel.angle;
+      data.cursor_radius = wheel.radius;
+
+      const target = jsPsych.evaluateTimelineVariable('targetHue');
+      data.target_hue = target;
+      if (target != null) {
+        const half = N_HUES / 2;
+        const err  = data.response_hue - Number(target);
+        data.hue_error = ((err + half) % N_HUES + N_HUES) % N_HUES - half;
+      }
+
+      if (data.click_x !== null && data.click_x !== undefined) {
+        const x =  data.click_x - data.center_x;
+        const y = -(data.click_y - data.center_y);
+        data.click_angle  = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+        data.click_radius = Math.hypot(x, y);
+
+        const th = jsPsych.evaluateTimelineVariable('theta');
+        if (th != null) {
+          const err = data.click_angle - Number(th);
+          data.click_error = ((err + 180) % 360 + 360) % 360 - 180;
+        }
+      }
+
+      console.log('probe', data.probe_stim, 'start', data.start_hue,
+                  'response', data.response_hue, 'target', data.target_hue,
+                  'error', data.hue_error);
+    }
+  };
+
+  const iti = {
+    type: jsPsychPsychophysics,
+    canvas_width: window.innerWidth,
+    canvas_height: window.innerHeight,
+    stimuli: [{
+      obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+      fill_color: 'rgb(128, 128, 128)', show_start_time: 0
+    }],
+    choices: "NO_KEYS",
+    trial_duration: 300
+  };
+
+  blocks.forEach((vars, k) => {
+    timeline.push(blockLoader(k));
+    timeline.push({ timeline: [study, test, iti], timeline_variables: vars });
+  });
+
+  hideLoading();
+  await jsPsych.run(timeline);
+}
+
+runExperiment().catch(err => {
+  console.error(err);
+  showLoading('Setup failed: ' + err.message);
+});
+
+  </script>
+  </body>
+</html>

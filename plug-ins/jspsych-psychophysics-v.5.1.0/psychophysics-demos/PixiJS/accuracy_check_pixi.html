@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/8.13.2/pixi.min.js" integrity="sha512-rOMqai9NIPaFWpmvHUjdOa2dSuaaYo6i7E19jS1ZW9rjnrl4qAOOtsOeTk0QgIflFCe2ZYi/7or3CRF6VfBk9g==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://unpkg.com/jspsych@8.2.3"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-html-keyboard-response@2.1.0"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-fullscreen@2.1.0"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-preload@2.1.0"></script>
+    <script src="../../jspsych-psychophysics.js"></script>
+    <link href="https://unpkg.com/jspsych@8.2.3/css/jspsych.css" rel="stylesheet" type="text/css" />
+    <style>
+    p {
+        color: white;
+    }
+    body {
+      background-color: black;
+    }
+    .text-white {
+        color: white;
+     }
+  </style>
+</head>
+<body></body>
+<script>
+    // The accuracy of the psychophysics plugin was confirmed using this script.
+    // See https://osf.io/pj4sb/
+    // You can change the time units by appending the parameter like this: accuracy_manual_pixi.html?units=frame
+
+    (async () => {
+
+        const jsPsych = initJsPsych({
+            on_finish: function() {
+                app.destroy(true, {
+                    children: true,
+                    texture: true,
+                    baseTexture: true
+                });
+                jsPsych.data.get().localSave('csv','mydata.csv');
+            }
+        })
+
+        let time_units = jsPsych.data.getURLVariable('units');
+        if (typeof time_units === "undefined") {
+            time_units = "ms"
+        } else {
+            if (time_units !== "ms" && time_units !== "frame") {
+                alert("Invalid time_units!")
+            }
+        }
+        console.log(time_units)
+
+
+        const app = new PIXI.Application();
+        await app.init({});
+        console.log(`jsPsych Version ${jsPsych.version()}`)
+
+        const experiment = [];
+
+        const sounds = [
+            '../sound/tone500ms.wav',
+            '../sound/tone100ms.wav'
+        ];
+
+        const preload = {
+            type: jsPsychPreload,
+            audio: sounds,
+        }
+
+        const enter_fullscreen = {
+            type: jsPsychFullscreen,
+            fullscreen_mode: true,
+            simulation_options: {
+                simulate: false
+            }
+        }
+
+        experiment.push(preload)
+        experiment.push(enter_fullscreen)
+
+        let rect1;
+        let rect2;
+        let sound_object;
+
+        if (time_units === "ms") {
+            rect1 = {
+                obj_type: 'rect',
+                startX: 300,
+                startY: 200,
+                width: 100,
+                height: 100,
+                fill_color: 'white',
+                show_start_time: 0,
+                show_end_time: 50, // Rect1 is presented for 50 ms. 
+                is_frame: false,
+                origin_center: false,
+            }
+
+            rect2 = {
+                obj_type: 'rect',
+                startX: 800,
+                startY: 800,
+                width: 100,
+                height: 100,
+                fill_color: 'white',
+                show_start_time: 100,
+                show_end_time: 150, // Rect2 is presented for 50 ms, 100 ms after Rect1 is presented (i.e., SOA = 100 ms).
+                is_frame: false,
+                origin_center: false,
+            }
+
+            sound_object = {
+                obj_type: 'sound',
+                file: sounds[0],
+                show_start_time: 100, // The sound is presented for 100 ms, 100 ms after Rect1 is presented (i.e., SOA = 100 ms).
+                // In addition, the sound is presented at the same time of the onset of Rect2.
+                // Note that the duration of the sound is depend on the audio file.
+                is_frame: false
+            }
+
+        } else { // in terms of frames
+            rect1 = {
+                obj_type: 'rect',
+                startX: 300,
+                startY: 200,
+                width: 100,
+                height: 100,
+                fill_color: 'white',
+                show_start_frame: 0,
+                show_end_frame: 3, // Rect1 is presented for 3 frames (50 ms). 
+                is_frame: true,
+                origin_center: false,
+            }
+
+            rect2 = {
+                obj_type: 'rect',
+                startX: 800,
+                startY: 800,
+                width: 100,
+                height: 100,
+                fill_color: 'white',
+                show_start_frame: 6,
+                show_end_frame: 9, // Rect2 is presented for 3 frames (50 ms), 6 frames (100 ms) after Rect1 is presented (i.e., SOA = 100 ms).
+                is_frame: true,
+                origin_center: false,
+            }
+
+            sound_object = {
+                obj_type: 'sound',
+                file: sounds[0],
+                show_start_frame: 6, // The sound is presented for 100 ms, 100 ms after Rect1 is presented (i.e., SOA = 100 ms).
+                // In addition, the sound is presented at the same time of the onset of Rect2.
+                // Note that the duration of the sound is depend on the audio file.
+                is_frame: true
+            }
+        }
+
+        const preplay_sound = {
+            type: jsPsychPsychophysics,
+            stimuli: [
+                {
+                    obj_type: 'sound',
+                    file: sounds[1]
+                }
+            ],
+            background_color: 'black',
+        }
+        experiment.push(preplay_sound)
+
+        const instruction2 = {
+            type: jsPsychHtmlKeyboardResponse,
+            // stimulus: '<p>This program uses the jspsych-psychophysics plugin.</p><p>Press any key to start.</p>'
+            stimulus: `<p class="text-white">Pixi.js is used.<br>Time unit: ${time_units}<br>Press any key to start the trial.</p>`,
+            simulation_options: {
+                simulate: false
+            }
+        }
+        experiment.push(instruction2)
+
+
+        for (let repeat = 0; repeat < 30; repeat++){
+
+            const blank = {
+                type: jsPsychHtmlKeyboardResponse,
+                stimulus: ``,
+            }
+            experiment.push(blank)
+
+            // The simulation mode enables an automatic response at 800 ms.
+            const show_rect_sound = {
+                type: jsPsychPsychophysics,
+                pixi_app: function() {
+                    return app;
+                },
+                stimuli: [rect1, rect2, sound_object],
+                background_color: 'black',
+            }
+
+            experiment.push(show_rect_sound);
+        }
+
+        const exit_fullscreen = {
+            type: jsPsychFullscreen,
+            fullscreen_mode: false,
+            delay_after: 0,
+        }
+        experiment.push(exit_fullscreen)
+
+        const end_trial = {
+            type: jsPsychHtmlKeyboardResponse,
+            // stimulus: '<p>The program is finished.</p>'
+            stimulus: ''
+        }
+
+        experiment.push(end_trial)
+        const sim_opts = {
+            default: {
+                data: {
+                    rt: 800
+                }
+            },
+        }
+
+        jsPsych.simulate(experiment, "visual", sim_opts);
+    })();
+    
+</script>
+
+</html>
