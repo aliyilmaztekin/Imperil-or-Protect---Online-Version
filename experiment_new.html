@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Imperil-Protect-Web</title>
+
+    <script src="https://github.com/aliyilmaztekin/Imperil-or-Protect---Online-Version/tree/main/plug-ins/jspsych"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-html-keyboard-response@2.2.0"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-call-function@2.1.0"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-fullscreen@2.1.0"></script>
+    <script src="https://unpkg.com/@kurokida/jspsych-psychophysics@5.1.0"></script>
+    <link href="https://unpkg.com/jspsych@8.3.0/css/jspsych.css" rel="stylesheet" type="text/css" />
+
+    <!-- Import the color rotation code -->
+    <script src="labrotate.js"></script>
+
+    <style>
+      /* The psychophysics plugin sets canvas.style.width/height itself.
+         Forcing 100vw/100vh here decouples layout size from drawing size and
+         makes pointer coordinates disagree with drawn coordinates. */
+      canvas { display: block; margin: 0 auto; }
+      html, body { height: 100%; overflow: hidden; margin: 0; }
+      #loadscreen {
+        position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 12px;
+        font-family: sans-serif; font-size: 18px;
+        background: rgb(128,128,128); color: #fff; z-index: 9999;
+      }
+      #loadscreen.hidden { display: none; }
+      #loadbar { width: 320px; height: 6px; background: rgba(255,255,255,.25); }
+      #loadbar > div { height: 100%; width: 0; background: #fff; transition: width .15s linear; }
+    </style>
+  </head>
+  <body>
+  <div id="loadscreen"><span id="loadtext">Starting&hellip;</span><div id="loadbar"><div></div></div></div>
+  <script>
+'use strict';
+
+/* ==================================================================== *
+ *  CONFIG                                                              *
+ * ==================================================================== */
+
+// Study images
+const SRC_ROOT = 'TestObjectsTransparent';
+const SRC_EXT  = '.png';
+
+// Optional: manifest.csv written by RotateExplicitPar (columns id,sourceFile).
+// If absent, the source file is assumed to be `${id}${SRC_EXT}`.
+const MANIFEST_URL = 'manifest.csv';
+
+// The condition matrix determines the events. ImageMatrix determines the image names. 
+const CONDITION_URL = 'conditionMatrix1.json';
+const IMAGE_URL     = 'imageMatrix1.json';
+
+// Rotation angles. MATLAB rendered 1:359; theta 0 (unrotated) is now
+// reachable too, which closes the 1-degree gap in the response space.
+// Set THETA_MIN = 1 to reproduce the old 359-value range exactly.
+const THETA_MIN = 0;
+const N_THETA   = 360;
+
+// Which conditionMatrix column holds the probe (0-based).
+// Row layout: rep, context, rep1color, rep2color, novel, theta, probe, pos...
+const PROBE_COL = 6;
+const PROBE_MODE = 'auto';        // 'auto' | 'id' | 'slot'
+
+const BLOCK_SIZE = 6;
+const LAB_CACHE  = 12;            // LabStim objects kept resident (~4 MB each)
+
+const PROBE_SCALE = 0.5;
+const STUDY_SCALE = 0.5;
+const POS_Y_SIGN  = 1;            // flip to -1 if study positions come out mirrored
+
+// Response wheel geometry (canvas pixels, from screen centre).
+const WHEEL_INNER_R = 170;
+const WHEEL_OUTER_R = 215;
+const WHEEL_MARKER  = true;
+
+// Cursor angle -> theta.  theta = mod(WHEEL_DIR * screenAngle + WHEEL_OFFSET)
+const WHEEL_DIR    = -1;
+const WHEEL_OFFSET = 90;
+
+// Where the wheel's colours come from.
+//   'stimulus' - the probe's own area-weighted mean L*, chroma and hue,
+//                so the ring shows what that object actually becomes.
+//   'fixed'    - a constant reference ring, identical on every trial.
+const WHEEL_REF = 'stimulus';
+const WHEEL_FIXED_L = 70, WHEEL_FIXED_C = 38, WHEEL_FIXED_H = 0;
+
+const REQUIRE_INSIDE_RING = false;
+const RING_INNER = 60, RING_OUTER = 400;
+
+// Event durations (in milliseconds)
+const STUDY_MS = 1900, STUDY_STIM_MS = 800;
+const TEST_MS  = 4300, TEST_STIM_MS  = 4000;
+const ITI_MS   = 300;
+
+// Context colors pre-defined here. startContext is a random context chosen initially
+const contextColors = ['rgb(165, 127, 151)', 'rgb(135, 174, 116)'];
+const BG_GREY = 'rgb(128, 128, 128)';
+const startContext = Math.round(Math.random());
+
+// Data saving. Leave SAVE_URL empty to skip the server round trip and rely
+// on the CSV download at the end.
+const SAVE_URL   = '';            // e.g. 'https://your-server.example/save'
+const SAVE_BLOCKS = true;         // POST after every block, not just at the end
+const DOWNLOAD_CSV_FALLBACK = true;
+
+const params = new URLSearchParams(location.search);
+const PARTICIPANT_ID = params.get('PROLIFIC_PID') || params.get('id') || `anon-${Date.now()}`;
+const SESSION_ID     = params.get('SESSION_ID') || params.get('session') || '1';
+
+/* ==================================================================== *
+ *  SMALL HELPERS                                                       *
+ * ==================================================================== */
+
+const mod = (x, m) => ((x % m) + m) % m;
+
+// theta from a screen angle measured CCW from +x with y pointing up.
+const thetaFromAngle = deg => THETA_MIN + mod(Math.round(WHEEL_DIR * deg + WHEEL_OFFSET), N_THETA);
+
+// Exact inverse, used to paint the wheel so the colour under the cursor is
+// the colour on screen. Valid because WHEEL_DIR is +/-1.
+const angleFromTheta = th => mod(WHEEL_DIR * (th - THETA_MIN - WHEEL_OFFSET), 360);
+
+// Signed circular difference in degrees, in (-180, 180].
+const circDiff = (a, b) => mod(a - b + 180, 360) - 180;
+
+/*
+ * jspsych-psychophysics sets  canvas.width = canvas_width * devicePixelRatio
+ * and then  ctx.scale(dpr, dpr).  So drawing coordinates are CSS pixels while
+ * canvas.width is the backing store, dpr times larger. Using canvas.width / 2
+ * as the centre overshoots by exactly dpr and throws everything into the
+ * bottom-right corner on HiDPI displays.
+ *
+ * Read the scale off the context instead of assuming devicePixelRatio, so this
+ * stays correct if the plugin ever changes its scaling policy.
+ */
+function drawingBox(canvas, ctx) {
+  const t = ctx.getTransform();
+  const sx = t.a || 1, sy = t.d || 1;
+  const w = canvas.width / sx, h = canvas.height / sy;
+  return { w, h, cx: w / 2, cy: h / 2, sx, sy };
+}
+
+const loadEl   = document.getElementById('loadscreen');
+const loadText = document.getElementById('loadtext');
+const loadFill = document.querySelector('#loadbar > div');
+
+function showLoading(text, frac) {
+  if (!loadEl) return;
+  loadEl.classList.remove('hidden');
+  loadText.textContent = text;
+  loadFill.style.width = (frac == null ? 0 : Math.round(frac * 100)) + '%';
+}
+const hideLoading = () => loadEl && loadEl.classList.add('hidden');
+
+/* ==================================================================== *
+ *  FILENAME PARSING                                                    *
+ *                                                                      *
+ *  imageMatrix entries look like  stim_obj305-resized_deg078.png.      *
+ *  They are no longer fetched - they only tell us WHICH object and at  *
+ *  WHICH studied angle. The id is an opaque string; never coerce it    *
+ *  to Number.                                                          *
+ * ==================================================================== */
+
+const NAME_RE_NEW = /^stim([_-]?)(.+)([_-])deg([_-]?)(\d{1,3})\.(png|jpe?g)$/i;
+const NAME_RE_OLD = /^stim([_-]?)(\d+)([_-]?)deg([_-]?)(\d+)\.(png|jpe?g)$/i;
+
+function parseStimName(filename) {
+  const s = String(filename).trim().replace(/^.*[\\/]/, '');
+  const m = NAME_RE_NEW.exec(s) || NAME_RE_OLD.exec(s);
+  if (!m) throw new Error(`Unparseable image name: "${filename}"`);
+  return { id: m[2], theta: parseInt(m[5], 10) };
+}
+
+const idDigits = id => { const m = String(id).match(/\d+/); return m ? Number(m[0]) : null; };
+
+/* ==================================================================== *
+ *  PROBE COLUMN INTERPRETATION                                         *
+ * ==================================================================== */
+
+function matchIdToken(raw, ids) {
+  const s = String(raw).trim();
+  if (ids.includes(s)) return s;
+  if (/^\d+$/.test(s)) {
+    const n = Number(s);
+    const whole = ids.find(id => /^\d+$/.test(id) && Number(id) === n);
+    if (whole) return whole;
+    const hits = ids.filter(id => idDigits(id) === n);
+    if (hits.length === 1) return hits[0];
+  }
+  return null;
+}
+
+function inferProbeMode(conditionMatrix, imageMatrix) {
+  const n = conditionMatrix.length;
+  let idHits = 0, slotHits = 0;
+
+  for (let i = 0; i < n; i++) {
+    const ids = imageMatrix[i].map(f => parseStimName(f).id);
+    const raw = String(conditionMatrix[i][PROBE_COL]).trim();
+    if (matchIdToken(raw, ids)) idHits++;
+    const v = Number(raw);
+    if (/^\d+$/.test(raw) && v >= 1 && v <= ids.length) slotHits++;
+  }
+
+  const pctId = idHits / n, pctSlot = slotHits / n;
+  console.log(`probe column: id-match ${(pctId*100).toFixed(0)}%, slot-index ${(pctSlot*100).toFixed(0)}%`);
+
+  if (PROBE_MODE !== 'auto') return PROBE_MODE;
+  if (pctId >= 0.99) {
+    if (pctSlot >= 0.99) console.warn('Probe column is ambiguous (valid as both id and slot). Assuming "id".');
+    return 'id';
+  }
+  if (pctSlot >= 0.99) return 'slot';
+  throw new Error(
+    `Cannot interpret conditionMatrix column ${PROBE_COL + 1}: id-match ` +
+    `${(pctId*100).toFixed(0)}%, slot-index ${(pctSlot*100).toFixed(0)}%. ` +
+    `Check the column index or set PROBE_MODE manually.`);
+}
+
+/* ==================================================================== *
+ *  MATLAB CELL RESHAPE                                                 *
+ *                                                                      *
+ *  jsonencode flattens a cell array column-major, so a 900x3 cell       *
+ *  arrives as 2700 loose strings.                                       *
+ * ==================================================================== */
+
+function normalizeImageMatrix(raw, nTrials) {
+  if (!Array.isArray(raw)) raw = Object.values(raw);
+
+  if (Array.isArray(raw[0])) {
+    if (raw.length !== nTrials) {
+      throw new Error(`imageMatrix has ${raw.length} rows, conditionMatrix has ${nTrials}`);
+    }
+    return raw.map(r => r.slice(0, 3));
+  }
+
+  if (raw.length !== 3 * nTrials) {
+    throw new Error(`imageMatrix has ${raw.length} entries; expected ${3*nTrials} or ${nTrials} nested rows.`);
+  }
+
+  const colMajor = Array.from({ length: nTrials }, (_, i) => [raw[i], raw[i+nTrials], raw[i+2*nTrials]]);
+  const rowMajor = Array.from({ length: nTrials }, (_, i) => [raw[3*i], raw[3*i+1], raw[3*i+2]]);
+
+  // The two repeated items hold still across a mini-block; the novel one
+  // does not. Whichever reshape reproduces that is the right one.
+  const score = m => {
+    let hits = 0, total = 0;
+    for (let b = 0; b + BLOCK_SIZE <= m.length; b += BLOCK_SIZE) {
+      total++;
+      const head = m[b];
+      const held = m.slice(b, b+BLOCK_SIZE).every(r => r[0] === head[0] && r[1] === head[1]);
+      const moves = new Set(m.slice(b, b+BLOCK_SIZE).map(r => r[2])).size > 1;
+      if (held && moves) hits++;
+    }
+    return total ? hits / total : 0;
+  };
+
+  const sCol = score(colMajor), sRow = score(rowMajor);
+  console.log(`imageMatrix reshape: column-major ${(sCol*100).toFixed(0)}%, row-major ${(sRow*100).toFixed(0)}%`);
+  if (Math.max(sCol, sRow) < 0.9) {
+    console.warn('Neither reshape matches the expected 2-repeats + 1-novel structure. Check BLOCK_SIZE.');
+  }
+  return sCol >= sRow ? colMajor : rowMajor;
+}
+
+/* ==================================================================== *
+ *  SOURCE IMAGES + LAB CACHE                                           *
+ * ==================================================================== */
+
+const srcFileFor = new Map();     // id -> filename within SRC_ROOT
+const srcBitmaps = new Map();     // id -> ImageData (straight alpha)
+const labCache   = new Map();     // id -> LabStim  (insertion-ordered LRU)
+
+function srcUrl(id) {
+  return `${SRC_ROOT}/${srcFileFor.get(id) || (id + SRC_EXT)}`;
+}
+
+function decodeToImageData(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      // willReadFrequently keeps the readback on the CPU path; srgb stops the
+      // browser colour-managing the decode out from under us.
+      const ctx = c.getContext('2d', { willReadFrequently: true, colorSpace: 'srgb' });
+      ctx.drawImage(img, 0, 0);
+      resolve(ctx.getImageData(0, 0, c.width, c.height));
+    };
+    img.onerror = () => reject(new Error(`Could not load source image: ${url}`));
+    img.src = url;
+  });
+}
+
+async function preloadSources(ids, onProgress) {
+  let done = 0;
+  const CONCURRENCY = 8;
+  let next = 0;
+  const worker = async () => {
+    while (next < ids.length) {
+      const id = ids[next++];
+      if (!srcBitmaps.has(id)) srcBitmaps.set(id, await decodeToImageData(srcUrl(id)));
+      onProgress(++done, ids.length);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, ids.length) }, worker));
+}
+
+function getLab(id) {
+  let st = labCache.get(id);
+  if (st) { labCache.delete(id); labCache.set(id, st); return st; }   // refresh LRU
+
+  const data = srcBitmaps.get(id);
+  if (!data) throw new Error(`No source bitmap decoded for "${id}"`);
+  st = new LabStim(data.data, data.width, data.height);
+  labCache.set(id, st);
+
+  while (labCache.size > LAB_CACHE) {
+    const oldest = labCache.keys().next().value;
+    labCache.delete(oldest);
+  }
+  return st;
+}
+
+/* ==================================================================== *
+ *  RENDERER                                                            *
+ *                                                                      *
+ *  One scratch canvas per stimulus. render() early-returns when theta   *
+ *  has not changed, so pointermove events that outrun the display cost  *
+ *  nothing.                                                             *
+ * ==================================================================== */
+
+const scratchFor = new WeakMap();
+
+function drawStim(ctx, stim, theta, cx, cy, scale) {
+  let s = scratchFor.get(stim);
+  if (!s) {
+    const c = document.createElement('canvas');
+    c.width = stim.width; c.height = stim.height;
+    s = { canvas: c, ctx: c.getContext('2d', { colorSpace: 'srgb' }),
+          img: new ImageData(stim.out, stim.width, stim.height), theta: null };
+    scratchFor.set(stim, s);
+  }
+  if (s.theta !== theta) {
+    stim.render(theta);
+    s.ctx.putImageData(s.img, 0, 0);
+    s.theta = theta;
+  }
+  const w = stim.width * scale, h = stim.height * scale;
+  ctx.drawImage(s.canvas, cx - w / 2, cy - h / 2, w, h);
+}
+
+/* ==================================================================== *
+ *  RESPONSE WHEEL                                                      *
+ *                                                                      *
+ *  Painted through labToRgb255, i.e. the same colour path as the        *
+ *  stimuli (including the disabled output gamma), so the ring and the   *
+ *  object agree.                                                        *
+ * ==================================================================== */
+
+const wheelCanvas = document.createElement('canvas');
+wheelCanvas.width = wheelCanvas.height = WHEEL_OUTER_R * 2 + 4;
+const wheelCtx = wheelCanvas.getContext('2d', { colorSpace: 'srgb' });
+
+function buildWheel(ref) {
+  const c = WHEEL_OUTER_R + 2;
+  wheelCtx.clearRect(0, 0, wheelCanvas.width, wheelCanvas.height);
+
+  for (let t = 0; t < N_THETA; t++) {
+    const theta = THETA_MIN + t;
+    const hRad = (ref.h + theta) * Math.PI / 180;
+    const [r, g, b] = labToRgb255(ref.L, ref.C * Math.cos(hRad), ref.C * Math.sin(hRad));
+
+    // Screen angle for this theta, converted to canvas convention (y down).
+    const ang  = angleFromTheta(theta);
+    const half = (360 / N_THETA) / 2 + 0.35;          // slight overlap kills seams
+    const a0 = -(ang + half) * Math.PI / 180;
+    const a1 = -(ang - half) * Math.PI / 180;
+
+    wheelCtx.beginPath();
+    wheelCtx.arc(c, c, WHEEL_OUTER_R, a0, a1);
+    wheelCtx.arc(c, c, WHEEL_INNER_R, a1, a0, true);
+    wheelCtx.closePath();
+    wheelCtx.fillStyle = `rgb(${r},${g},${b})`;
+    wheelCtx.fill();
+  }
+
+  wheelCtx.strokeStyle = 'rgba(0,0,0,.55)';
+  wheelCtx.lineWidth = 1.5;
+  for (const R of [WHEEL_INNER_R, WHEEL_OUTER_R]) {
+    wheelCtx.beginPath(); wheelCtx.arc(c, c, R, 0, 2 * Math.PI); wheelCtx.stroke();
+  }
+}
+
+function drawWheel(ctx, cx, cy, theta) {
+  const c = WHEEL_OUTER_R + 2;
+  ctx.drawImage(wheelCanvas, cx - c, cy - c);
+
+  if (!WHEEL_MARKER || theta == null) return;
+  const rad = angleFromTheta(theta) * Math.PI / 180;
+  const ux = Math.cos(rad), uy = -Math.sin(rad);          // y down on canvas
+  ctx.save();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(cx + ux * (WHEEL_INNER_R - 6), cy + uy * (WHEEL_INNER_R - 6));
+  ctx.lineTo(cx + ux * (WHEEL_OUTER_R + 6), cy + uy * (WHEEL_OUTER_R + 6));
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* ==================================================================== *
+ *  CURSOR TRACKING                                                     *
+ * ==================================================================== */
+
+const wheel = { angle: null, radius: null, theta: 0, startTheta: 0, stim: null, detach: null };
+
+function attachTracker() {
+  const canvas = document.querySelector('canvas');
+  if (!canvas) return;
+  const g = drawingBox(canvas, canvas.getContext('2d'));
+  const box = canvas.getBoundingClientRect();
+
+  // client px -> drawing units. One uniform factor, not separate x and y:
+  // a non-uniform scale would distort the cursor angle and therefore the hue.
+  const k = g.w / box.width;
+  if (Math.abs(k - g.h / box.height) > 0.01) {
+    console.warn('Canvas layout aspect differs from its drawing aspect; ' +
+                 'cursor angles will be skewed. Check the canvas CSS.');
+  }
+
+  const cx = box.left + box.width / 2, cy = box.top + box.height / 2;
+
+  function onMove(e) {
+    const x =  (e.clientX - cx) * k;
+    const y = -(e.clientY - cy) * k;
+    wheel.radius = Math.hypot(x, y);
+    wheel.angle  = mod(Math.atan2(y, x) * 180 / Math.PI, 360);
+    if (REQUIRE_INSIDE_RING && (wheel.radius < RING_INNER || wheel.radius > RING_OUTER)) return;
+    wheel.theta = thetaFromAngle(wheel.angle);
+  }
+
+  canvas.addEventListener('pointermove', onMove);
+  wheel.detach = () => canvas.removeEventListener('pointermove', onMove);
+}
+
+/* ==================================================================== *
+ *  DATA SAVING                                                         *
+ * ==================================================================== */
+
+let savedRows = 0;
+
+async function postRows(rows, tag) {
+  if (!SAVE_URL || !rows.length) return { ok: false, skipped: true };
+  const body = JSON.stringify({
+    participant_id: PARTICIPANT_ID, session: SESSION_ID, tag,
+    sent_at: new Date().toISOString(), rows
+  });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(SAVE_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body, keepalive: body.length < 60000
+      });
+      if (res.ok) return { ok: true };
+      console.warn(`save "${tag}" HTTP ${res.status} (attempt ${attempt + 1})`);
+    } catch (e) {
+      console.warn(`save "${tag}" failed (attempt ${attempt + 1}):`, e.message);
+    }
+    await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+  }
+  return { ok: false };
+}
+
+// Ships only rows not sent yet, so a dropout still leaves everything up to
+// the last completed block on the server.
+async function saveIncremental(jsPsych, tag) {
+  const all = jsPsych.data.get().filter({ trial_part: 'test' }).values();
+  const fresh = all.slice(savedRows);
+  if (!fresh.length) return;
+  const res = await postRows(fresh, tag);
+  if (res.ok) savedRows = all.length;
+}
+
+function downloadCsv(jsPsych) {
+  try {
+    const csv = jsPsych.data.get().csv();
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${PARTICIPANT_ID}_s${SESSION_ID}_${Date.now()}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch (e) {
+    console.error('CSV download failed:', e);
+  }
+}
+
+/* ==================================================================== *
+ *  EXPERIMENT                                                          *
+ * ==================================================================== */
+
+async function runExperiment() {
+
+  const jsPsych = initJsPsych({
+    on_finish: async function () {
+      showLoading('Saving your data\u2026');
+      const res = await postRows(jsPsych.data.get().values(), 'final');
+      if (!res.ok && DOWNLOAD_CSV_FALLBACK) downloadCsv(jsPsych);
+      showLoading('Done. Thank you \u2014 you may close this window.');
+    }
+  });
+
+  jsPsych.data.addProperties({
+    participant_id: PARTICIPANT_ID,
+    session: SESSION_ID,
+    start_context: startContext,
+    theta_min: THETA_MIN,
+    n_theta: N_THETA,
+    screen_w: window.innerWidth,
+    screen_h: window.innerHeight,
+    dpr: window.devicePixelRatio || 1,
+    ua: navigator.userAgent
+  });
+
+  /* ---- condition files ---- */
+
+  showLoading('Loading condition files\u2026');
+
+  const [conditionMatrix, rawImageMatrix] = await Promise.all([
+    fetch(CONDITION_URL).then(r => r.json()),
+    fetch(IMAGE_URL).then(r => r.json())
+  ]);
+
+  const nTrials = conditionMatrix.length;
+  const imageMatrix = normalizeImageMatrix(rawImageMatrix, nTrials);
+  const probeMode = inferProbeMode(conditionMatrix, imageMatrix);
+
+  /* ---- optional manifest: id -> original filename ---- */
+
+  try {
+    const txt = await fetch(MANIFEST_URL).then(r => r.ok ? r.text() : Promise.reject());
+    txt.trim().split(/\r?\n/).slice(1).forEach(line => {
+      const [id, file] = line.split(',').map(s => s.trim().replace(/^"|"$/g, ''));
+      if (id && file) srcFileFor.set(id, file);
+    });
+    console.log(`manifest: ${srcFileFor.size} id -> file mappings`);
+  } catch {
+    console.log(`No manifest at ${MANIFEST_URL}; assuming "<id>${SRC_EXT}".`);
+  }
+
+  /* ---- timeline variables ---- */
+
+  let unmatchedProbes = 0;
+
+  const timelineVars = conditionMatrix.map((row, i) => {
+    const [rep, context, rep1color, rep2color, novel, theta, probe,
+           pos1x, pos1y, pos2x, pos2y, pos3x, pos3y] = row;
+
+    const parsed = imageMatrix[i].map(parseStimName);
+    const ids    = parsed.map(p => p.id);
+
+    let probeStimId = null;
+    if (probeMode === 'slot') {
+      const v = Number(probe);
+      if (Number.isInteger(v) && v >= 1 && v <= ids.length) probeStimId = ids[v - 1];
+    } else {
+      probeStimId = matchIdToken(probe, ids);
+    }
+
+    let probeSlot = probeStimId === null ? -1 : ids.indexOf(probeStimId);
+    if (probeSlot === -1) { unmatchedProbes++; probeSlot = 0; probeStimId = ids[0]; }
+
+    // The studied hue is the degree in that item's own filename. This is the
+    // authoritative value; the rep1color/rep2color/novel columns are carried
+    // through as a cross-check rather than used for scoring.
+    return {
+      rep, context, theta, probe,
+      rep1color, rep2color, novel,
+      probeStimId, probeSlot,
+      targetTheta: parsed[probeSlot].theta,
+      probeResolved: probeStimId !== null,
+      ids,
+      studyThetas: parsed.map(p => p.theta),
+      pos: [[pos1x, pos1y], [pos2x, pos2y], [pos3x, pos3y]]
+    };
+  });
+
+  if (unmatchedProbes) {
+    console.warn(`${unmatchedProbes}/${nTrials} trials: probe value in column ` +
+                 `${PROBE_COL + 1} could not be resolved (mode "${probeMode}"). ` +
+                 `Those trials fell back to slot 1; their hue_error is NOT trustworthy.`);
+  }
+
+  // Cross-check the colour columns against the filenames, once, loudly.
+  {
+    const mismatched = timelineVars.filter(v => {
+      const cols = [v.rep1color, v.rep2color, v.novel].map(Number);
+      return v.studyThetas.some((t, k) => Number.isFinite(cols[k]) && cols[k] !== t);
+    }).length;
+    if (mismatched) {
+      console.warn(`${mismatched}/${nTrials} trials: the rep1color/rep2color/novel ` +
+                   `columns disagree with the degrees in imageMatrix filenames. ` +
+                   `Filenames are being used. Reconcile this before analysis.`);
+    }
+  }
+
+  /* ---- preload source PNGs ---- */
+
+  const allIds = [...new Set(timelineVars.flatMap(v => v.ids))];
+  console.log(`${nTrials} trials, ${allIds.length} distinct objects`);
+
+  showLoading('Loading stimuli\u2026', 0);
+  await preloadSources(allIds, (n, total) => {
+    showLoading(`Loading stimuli\u2026 ${n}/${total}`, n / total);
+  });
+
+  /* ---- blocks ---- */
+
+  const blocks = [];
+  for (let i = 0; i < timelineVars.length; i += BLOCK_SIZE) {
+    blocks.push(timelineVars.slice(i, i + BLOCK_SIZE));
+  }
+
+  // Convert this block's objects to Lab up front (~60 ms each) so no trial
+  // ever pays for it mid-stream.
+  function blockPrep(k) {
+    return {
+      type: jsPsychCallFunction,
+      async: true,
+      func: function (done) {
+        const ids = [...new Set(blocks[k].flatMap(v => v.ids))];
+        showLoading(`Preparing block ${k + 1} of ${blocks.length}\u2026`, 0);
+        let n = 0;
+        const step = () => {
+          if (n < ids.length) {
+            getLab(ids[n++]);
+            showLoading(`Preparing block ${k + 1} of ${blocks.length}\u2026`, n / ids.length);
+            setTimeout(step, 0);              // yield so the bar actually paints
+          } else {
+            hideLoading();
+            done();
+          }
+        };
+        step();
+      }
+    };
+  }
+
+  function blockSave(k) {
+    return {
+      type: jsPsychCallFunction,
+      async: true,
+      func: function (done) {
+        done();                                // never block the participant
+        if (SAVE_BLOCKS) saveIncremental(jsPsych, `block${k + 1}`).catch(console.warn);
+      }
+    };
+  }
+
+  /* ---- trials ---- */
+
+  const trialState = { study: null, wheelRef: null };
+
+  const ctxColor = () => {
+    const raw = jsPsych.evaluateTimelineVariable('context');
+    const idx = (raw === null || raw === undefined || raw === '') ? startContext : Number(raw);
+    return contextColors[idx] ?? contextColors[0];
+  };
+
+  const bgRect = () => ({
+    obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+    fill_color: ctxColor, show_start_time: 0
+  });
+
+  const study = {
+    type: jsPsychPsychophysics,
+    canvas_width: window.innerWidth,
+    canvas_height: window.innerHeight,
+    background_color: BG_GREY,
+    stimuli: [
+      bgRect(),
+      {
+        obj_type: 'manual',
+        show_start_time: 0,
+        show_end_time: STUDY_STIM_MS,
+        drawFunc: function (s, canvas, ctx) {
+          const { cx, cy } = drawingBox(canvas, ctx);
+          const st = trialState.study;
+          for (let k = 0; k < 3; k++) {
+            drawStim(ctx, st.stims[k], st.thetas[k],
+                     cx + st.pos[k][0], cy + POS_Y_SIGN * st.pos[k][1], STUDY_SCALE);
+          }
+        }
+      }
+    ],
+    choices: 'NO_KEYS',
+    trial_duration: STUDY_MS,
+    on_start: function () {
+      trialState.study = {
+        stims:  jsPsych.evaluateTimelineVariable('ids').map(getLab),
+        thetas: jsPsych.evaluateTimelineVariable('studyThetas').map(Number),
+        pos:    jsPsych.evaluateTimelineVariable('pos').map(p => p.map(Number))
+      };
+    },
+    data: { trial_part: 'study' }
+  };
+
+  const test = {
+    type: jsPsychPsychophysics,
+    canvas_width: window.innerWidth,
+    canvas_height: window.innerHeight,
+    background_color: BG_GREY,
+    stimuli: [
+      bgRect(),
+      {
+        obj_type: 'manual',
+        show_start_time: 0,
+        show_end_time: TEST_STIM_MS,
+        drawFunc: function (s, canvas, ctx) {
+          const { cx, cy } = drawingBox(canvas, ctx);
+          drawWheel(ctx, cx, cy, wheel.theta);
+          if (wheel.stim) drawStim(ctx, wheel.stim, wheel.theta, cx, cy, PROBE_SCALE);
+        }
+      }
+    ],
+    response_type: 'mouse',
+    response_start_time: 0,
+    trial_duration: TEST_MS,
+
+    on_start: function () {
+      const id = jsPsych.evaluateTimelineVariable('probeStimId');
+      wheel.stim       = getLab(id);
+      wheel.startTheta = THETA_MIN + Math.floor(Math.random() * N_THETA);
+      wheel.theta      = wheel.startTheta;
+      wheel.angle      = null;
+      wheel.radius     = null;
+
+      const ref = WHEEL_REF === 'stimulus'
+        ? wheel.stim.meanChromaPolar()
+        : { L: WHEEL_FIXED_L, C: WHEEL_FIXED_C, h: WHEEL_FIXED_H };
+      buildWheel(ref);
+      trialState.wheelRef = ref;
+    },
+
+    on_load: function () { attachTracker(); },
+
+    on_finish: function (data) {
+      if (wheel.detach) { wheel.detach(); wheel.detach = null; }
+
+      data.trial_part    = 'test';
+      data.probe_stim    = jsPsych.evaluateTimelineVariable('probeStimId');
+      data.probe_slot    = jsPsych.evaluateTimelineVariable('probeSlot');
+      data.probe_raw     = jsPsych.evaluateTimelineVariable('probe');
+      data.probe_resolved = jsPsych.evaluateTimelineVariable('probeResolved');
+      data.rep           = jsPsych.evaluateTimelineVariable('rep');
+      data.context       = jsPsych.evaluateTimelineVariable('context');
+
+      data.start_hue    = wheel.startTheta;
+      data.response_hue = wheel.theta;
+      data.target_hue   = Number(jsPsych.evaluateTimelineVariable('targetTheta'));
+      data.hue_error    = circDiff(data.response_hue, data.target_hue);
+
+      data.cursor_angle  = wheel.angle;
+      data.cursor_radius = wheel.radius;
+      data.responded     = wheel.angle !== null;
+
+      const ref = trialState.wheelRef;
+      if (ref) { data.wheel_L = ref.L; data.wheel_C = ref.C; data.wheel_h0 = ref.h; }
+
+      if (data.click_x !== null && data.click_x !== undefined) {
+        const x =  data.click_x - data.center_x;
+        const y = -(data.click_y - data.center_y);
+        data.click_angle  = mod(Math.atan2(y, x) * 180 / Math.PI, 360);
+        data.click_radius = Math.hypot(x, y);
+        const th = jsPsych.evaluateTimelineVariable('theta');
+        if (th != null) data.click_error = circDiff(data.click_angle, Number(th));
+      }
+    }
+  };
+
+  const iti = {
+    type: jsPsychPsychophysics,
+    canvas_width: window.innerWidth,
+    canvas_height: window.innerHeight,
+    background_color: BG_GREY,
+    stimuli: [{
+      obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+      fill_color: BG_GREY, show_start_time: 0
+    }],
+    choices: 'NO_KEYS',
+    trial_duration: ITI_MS,
+    data: { trial_part: 'iti' }
+  };
+
+  /* ---- timeline ---- */
+
+  const timeline = [];
+
+  timeline.push({
+    type: jsPsychFullscreen,
+    fullscreen_mode: true,
+    message: '<p style="font-family:sans-serif">The experiment will switch to full screen.</p>',
+    button_label: 'Begin'
+  });
+
+  timeline.push({
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
+      <h2>Instructions</h2>
+      <p>On each trial you will briefly see three objects. Try to remember the
+         colour of each one.</p>
+      <p>Then one object will reappear in the centre of a colour ring. Move the
+         mouse around the ring to change its colour, and <b>click</b> when it
+         matches the colour you saw.</p>
+      <p>Press any key to start.</p></div>`,
+    on_finish: () => hideLoading()
+  });
+
+  blocks.forEach((vars, k) => {
+    timeline.push(blockPrep(k));
+    timeline.push({ timeline: [study, test, iti], timeline_variables: vars });
+    timeline.push(blockSave(k));
+  });
+
+  timeline.push({
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div style="font-family:sans-serif;text-align:center">
+      <h2>Finished</h2><p>Press any key to save your data.</p></div>`,
+    choices: 'ALL_KEYS'
+  });
+
+  hideLoading();
+  await jsPsych.run(timeline);
+}
+
+runExperiment().catch(err => {
+  console.error(err);
+  showLoading('Setup failed: ' + err.message);
+});
+
+  </script>
+  </body>
+</html>
