@@ -4,15 +4,22 @@
     <meta charset="utf-8">
     <title>Imperil-Protect-Web</title>
 
-    <script src="https://github.com/aliyilmaztekin/Imperil-or-Protect---Online-Version/tree/main/plug-ins/jspsych"></script>
-    <script src="https://unpkg.com/@jspsych/plugin-html-keyboard-response@2.2.0"></script>
-    <script src="https://unpkg.com/@jspsych/plugin-call-function@2.1.0"></script>
-    <script src="https://unpkg.com/@jspsych/plugin-fullscreen@2.1.0"></script>
-    <script src="https://unpkg.com/@kurokida/jspsych-psychophysics@5.1.0"></script>
-    <link href="https://unpkg.com/jspsych@8.3.0/css/jspsych.css" rel="stylesheet" type="text/css" />
-
+    <!-- The root folder where all the contens of the experiment live-->
+    <!-- Defines the cosmetics of everything -->
+    <link href="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych/dist/jspsych.css" rel="stylesheet" type="text/css" />
+    
+    <!-- Load in the plug-ins from the root folder defined above-->
+    <!-- Make sure jsPsych comes first!-->
+    <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych/dist/jspsych.js"></script>
+    <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych/dist/plugin-html-keyboard-response.js"></script>
+    <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych/dist/plugin-call-function.js"></script>
+    <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych/dist/plugin-fullscreen.js"></script>
+    
+    <!-- The jsPsychophysics script-->
+    <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych-psychophysics-v.5.1.0/jspsych-psychophysics.js"></script>
+    
     <!-- Import the color rotation code -->
-    <script src="labrotate.js"></script>
+    <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/colorWheelTools/labrotate.js"></script>
 
     <style>
       /* The psychophysics plugin sets canvas.style.width/height itself.
@@ -44,13 +51,9 @@
 const SRC_ROOT = 'TestObjectsTransparent';
 const SRC_EXT  = '.png';
 
-// Optional: manifest.csv written by RotateExplicitPar (columns id,sourceFile).
-// If absent, the source file is assumed to be `${id}${SRC_EXT}`.
-const MANIFEST_URL = 'manifest.csv';
-
 // The condition matrix determines the events. ImageMatrix determines the image names. 
-const CONDITION_URL = 'conditionMatrix1.json';
-const IMAGE_URL     = 'imageMatrix1.json';
+const CONDITION_URL = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFiles/conditionMatrix1.json';
+const IMAGE_URL     = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFiles/imageMatrix1.json';
 
 // Rotation angles. MATLAB rendered 1:359; theta 0 (unrotated) is now
 // reachable too, which closes the 1-degree gap in the response space.
@@ -70,10 +73,14 @@ const PROBE_SCALE = 0.5;
 const STUDY_SCALE = 0.5;
 const POS_Y_SIGN  = 1;            // flip to -1 if study positions come out mirrored
 
-// Response wheel geometry (canvas pixels, from screen centre).
-const WHEEL_INNER_R = 170;
-const WHEEL_OUTER_R = 215;
-const WHEEL_MARKER  = true;
+// The ring is a plain black outline now: it anchors where to move the mouse
+// but carries no hue information. The angle -> theta mapping is unchanged.
+const CIRCLE_R      = 215;
+const CIRCLE_LINE_W = 3;
+const CIRCLE_COLOR  = 'rgb(0,0,0)';
+const WHEEL_MARKER  = true;        // short tick showing the current angle
+const MARKER_COLOR  = 'rgb(0,0,0)';
+const MARKER_LEN    = 12;          // half-length of the tick, in canvas px
 
 // Cursor angle -> theta.  theta = mod(WHEEL_DIR * screenAngle + WHEEL_OFFSET)
 const WHEEL_DIR    = -1;
@@ -353,60 +360,33 @@ function drawStim(ctx, stim, theta, cx, cy, scale) {
 }
 
 /* ==================================================================== *
- *  RESPONSE WHEEL                                                      *
+ *  RESPONSE RING                                                       *
  *                                                                      *
- *  Painted through labToRgb255, i.e. the same colour path as the        *
- *  stimuli (including the disabled output gamma), so the ring and the   *
- *  object agree.                                                        *
+ *  A plain black outline circle. The probe at the centre still          *
+ *  recolours with the cursor angle; the ring itself no longer shows     *
+ *  the colour space.                                                    *
  * ==================================================================== */
 
-const wheelCanvas = document.createElement('canvas');
-wheelCanvas.width = wheelCanvas.height = WHEEL_OUTER_R * 2 + 4;
-const wheelCtx = wheelCanvas.getContext('2d', { colorSpace: 'srgb' });
-
-function buildWheel(ref) {
-  const c = WHEEL_OUTER_R + 2;
-  wheelCtx.clearRect(0, 0, wheelCanvas.width, wheelCanvas.height);
-
-  for (let t = 0; t < N_THETA; t++) {
-    const theta = THETA_MIN + t;
-    const hRad = (ref.h + theta) * Math.PI / 180;
-    const [r, g, b] = labToRgb255(ref.L, ref.C * Math.cos(hRad), ref.C * Math.sin(hRad));
-
-    // Screen angle for this theta, converted to canvas convention (y down).
-    const ang  = angleFromTheta(theta);
-    const half = (360 / N_THETA) / 2 + 0.35;          // slight overlap kills seams
-    const a0 = -(ang + half) * Math.PI / 180;
-    const a1 = -(ang - half) * Math.PI / 180;
-
-    wheelCtx.beginPath();
-    wheelCtx.arc(c, c, WHEEL_OUTER_R, a0, a1);
-    wheelCtx.arc(c, c, WHEEL_INNER_R, a1, a0, true);
-    wheelCtx.closePath();
-    wheelCtx.fillStyle = `rgb(${r},${g},${b})`;
-    wheelCtx.fill();
-  }
-
-  wheelCtx.strokeStyle = 'rgba(0,0,0,.55)';
-  wheelCtx.lineWidth = 1.5;
-  for (const R of [WHEEL_INNER_R, WHEEL_OUTER_R]) {
-    wheelCtx.beginPath(); wheelCtx.arc(c, c, R, 0, 2 * Math.PI); wheelCtx.stroke();
-  }
-}
-
 function drawWheel(ctx, cx, cy, theta) {
-  const c = WHEEL_OUTER_R + 2;
-  ctx.drawImage(wheelCanvas, cx - c, cy - c);
-
-  if (!WHEEL_MARKER || theta == null) return;
-  const rad = angleFromTheta(theta) * Math.PI / 180;
-  const ux = Math.cos(rad), uy = -Math.sin(rad);          // y down on canvas
   ctx.save();
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+
+  ctx.strokeStyle = CIRCLE_COLOR;
+  ctx.lineWidth   = CIRCLE_LINE_W;
   ctx.beginPath();
-  ctx.moveTo(cx + ux * (WHEEL_INNER_R - 6), cy + uy * (WHEEL_INNER_R - 6));
-  ctx.lineTo(cx + ux * (WHEEL_OUTER_R + 6), cy + uy * (WHEEL_OUTER_R + 6));
+  ctx.arc(cx, cy, CIRCLE_R, 0, 2 * Math.PI);
   ctx.stroke();
+
+  if (WHEEL_MARKER && theta != null) {
+    const rad = angleFromTheta(theta) * Math.PI / 180;
+    const ux = Math.cos(rad), uy = -Math.sin(rad);       // y down on canvas
+    ctx.strokeStyle = MARKER_COLOR;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx + ux * (CIRCLE_R - MARKER_LEN), cy + uy * (CIRCLE_R - MARKER_LEN));
+    ctx.lineTo(cx + ux * (CIRCLE_R + MARKER_LEN), cy + uy * (CIRCLE_R + MARKER_LEN));
+    ctx.stroke();
+  }
+
   ctx.restore();
 }
 
@@ -537,18 +517,6 @@ async function runExperiment() {
   const imageMatrix = normalizeImageMatrix(rawImageMatrix, nTrials);
   const probeMode = inferProbeMode(conditionMatrix, imageMatrix);
 
-  /* ---- optional manifest: id -> original filename ---- */
-
-  try {
-    const txt = await fetch(MANIFEST_URL).then(r => r.ok ? r.text() : Promise.reject());
-    txt.trim().split(/\r?\n/).slice(1).forEach(line => {
-      const [id, file] = line.split(',').map(s => s.trim().replace(/^"|"$/g, ''));
-      if (id && file) srcFileFor.set(id, file);
-    });
-    console.log(`manifest: ${srcFileFor.size} id -> file mappings`);
-  } catch {
-    console.log(`No manifest at ${MANIFEST_URL}; assuming "<id>${SRC_EXT}".`);
-  }
 
   /* ---- timeline variables ---- */
 
@@ -736,12 +704,6 @@ async function runExperiment() {
       wheel.theta      = wheel.startTheta;
       wheel.angle      = null;
       wheel.radius     = null;
-
-      const ref = WHEEL_REF === 'stimulus'
-        ? wheel.stim.meanChromaPolar()
-        : { L: WHEEL_FIXED_L, C: WHEEL_FIXED_C, h: WHEEL_FIXED_H };
-      buildWheel(ref);
-      trialState.wheelRef = ref;
     },
 
     on_load: function () { attachTracker(); },
