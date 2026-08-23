@@ -46,17 +46,16 @@
 // CONFIG:
 
 // Study images
-const SRC_ROOT = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/colorWheelTools/TestObjectsTransparent/';
+const SRC_ROOT = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/colorWheelTools/TestObjectsTransparent';
 const SRC_EXT  = '.png';
 
 // The condition matrix determines the events. ImageMatrix determines the image names. 
-const CONDITION_URL = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFiles/conditionMatrix1.json';
-const IMAGE_URL     = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFiles/imageMatrix1.json';
+const CONDITION_URL = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFiles/conditionMatrixTest.json';
+const IMAGE_URL     = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFiles/imageMatrixTest.json';
 
 // Which conditionMatrix column holds the probe (0-based).
 // Row layout: rep, context, rep1color, rep2color, novel, theta, probe, pos...
 const probeCol = 6; 
-const thetaCol = 5;
 
 const BLOCK_SIZE = 60;
 const nCols = 3;
@@ -76,6 +75,9 @@ const MARKER_LEN    = 12;          // half-length of the tick, in canvas px
 // Cursor angle -> theta.  theta = mod(WHEEL_DIR * screenAngle + WHEEL_OFFSET)
 const WHEEL_DIR    = -1;
 const WHEEL_OFFSET = 90;
+
+const THETA_MIN = 0;
+const N_THETA   = 360;
 
 // Where the wheel's colours come from.
 //   'stimulus' - the probe's own area-weighted mean L*, chroma and hue,
@@ -111,18 +113,18 @@ const SESSION_ID     = params.get('SESSION_ID') || params.get('session') || '1';
 
 // Conversion functions
 
-// Modulo. There's no mod function in JS. 
 const mod = (x, m) => ((x % m) + m) % m;
 
 // theta from a screen angle measured CCW from +x with y pointing up.
-const angle2theta = deg => mod(Math.round(WHEEL_DIR * deg + WHEEL_OFFSET), 360);
+const thetaFromAngle = deg => THETA_MIN + mod(Math.round(WHEEL_DIR * deg + WHEEL_OFFSET), N_THETA);
 
 // Exact inverse, used to paint the wheel so the colour under the cursor is
 // the colour on screen. Valid because WHEEL_DIR is +/-1.
-const theta2angle = th => mod(WHEEL_DIR * (th  - WHEEL_OFFSET), 360);
+const angleFromTheta = th => mod(WHEEL_DIR * (th - THETA_MIN - WHEEL_OFFSET), 360);
 
 // Signed circular difference in degrees, in (-180, 180].
-const angDiff = (a, b) => mod(a - b + 180, 360) - 180;
+const circDiff = (a, b) => mod(a - b + 180, 360) - 180;
+
 
 /*
  * jspsych-psychophysics sets  canvas.width = canvas_width * devicePixelRatio
@@ -134,11 +136,11 @@ const angDiff = (a, b) => mod(a - b + 180, 360) - 180;
  * Read the scale off the context instead of assuming devicePixelRatio, so this
  * stays correct if the plugin ever changes its scaling policy.
  */
-function drawingBox(blankCanvas, htmlCTX) {
-  const transform = htmlCTX.getTransform();
-  const sx = transform.a || 1, sy = transform.d || 1;
-  const width = blankCanvas.width / sx, height = blankCanvas.height / sy;
-  return { width, height, centerX: width / 2, centerY: height / 2, sx, sy };
+function drawingBox(canvas, ctx) {
+  const t = ctx.getTransform();
+  const sx = t.a || 1, sy = t.d || 1;
+  const w = canvas.width / sx, h = canvas.height / sy;
+  return { w, h, cx: w / 2, cy: h / 2, sx, sy };
 }
 
 const loadEl   = document.getElementById('loadscreen');
@@ -171,12 +173,13 @@ const srcBitmaps = new Map();     // id -> ImageData (straight alpha)
 const labCache   = new Map();     // id -> LabStim  (insertion-ordered LRU)
 
 function srcUrl(id) {
-  return `${SRC_ROOT}/${srcFileFor.get(id) || (id + SRC_EXT)}`;
+  return `${SRC_ROOT}/${srcFileFor.get(id) || (id)}`;
 }
 
 function decodeToImageData(url) {
   return new Promise((resolve, reject) => {
     const img = new Image();
+    img.crossOrigin = 'anonymous'; 
     img.onload = () => {
       const c = document.createElement('canvas');
       c.width = img.naturalWidth; c.height = img.naturalHeight;
@@ -193,15 +196,9 @@ function decodeToImageData(url) {
 
 // Pre-load all the images in a block
 // To be called upon during breaks
-async function preloadSources(ids, onProgress, matrix) {
-  
+async function preloadSources(ids, onProgress) {
   let done = 0;
-
-  const nStimPerBlock = () => {
-    const nTrialsPerBlock = matrix.length/nBlock;
-    return (nTrialsPerBlock / 6) * 8;
-  };
-
+  const CONCURRENCY = 8;
   let next = 0;
   const worker = async () => {
     while (next < ids.length) {
@@ -210,7 +207,7 @@ async function preloadSources(ids, onProgress, matrix) {
       onProgress(++done, ids.length);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(nStimPerBlock, ids.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, ids.length) }, worker));
 }
 
 function getLab(id) {
@@ -230,59 +227,53 @@ function getLab(id) {
 }
 
 // Image rendering function
-const fileBank = new WeakMap();
+const scratchFor = new WeakMap();
 
-function drawStim(htmlCTX, curStim, centerX, centerY, scale) {
-
-  // Check if the current stimulus has already been drawn before
-  let stimFile = fileBank.get(curStim);
-
-  // If it has not been, do it for the first time:
-  if (!stimFile) {
-    
-    const blankCanvas = document.createElement('canvas');
-    blankCanvas.width = curStim.width; blankCanvas.height = curStim.height;
-    
-    // Fill up the stim file with stim properties
-    stimFile = { canvas: blankCanvas, htmlCTX: blankCanvas.getContext('2d', { colorSpace: 'srgb' }),
-          img: new ImageData(curStim.out, curStim.width, curStim.height), theta: null };
-    
-          // Add the new stim file to the file bank
-    fileBank.set(curStim, stimFile);
+function drawStim(ctx, stim, theta, cx, cy, scale) {
+  let s = scratchFor.get(stim);
+  if (!s) {
+    const c = document.createElement('canvas');
+    c.width = stim.width; c.height = stim.height;
+    s = { canvas: c, ctx: c.getContext('2d', { colorSpace: 'srgb' }),
+          img: new ImageData(stim.out, stim.width, stim.height), theta: null };
+    scratchFor.set(stim, s);
   }
-
-  // Draw on the created blank canvas the current stimulus, at the specified x-y coordinates
-  const curWidth = curStim.width * scale, curHeight = curStim.height * scale;
-  htmlCTX.drawImage(stimFile.canvas, centerX - curWidth / 2, centerY - curHeight / 2, curWidth, curHeight);
+  if (s.theta !== theta) {
+    stim.render(theta);
+    s.ctx.putImageData(s.img, 0, 0);
+    s.theta = theta;
+  }
+  const w = stim.width * scale, h = stim.height * scale;
+  ctx.drawImage(s.canvas, cx - w / 2, cy - h / 2, w, h);
 }
 
-// Create the black line spanning the color wheel 
-function drawWheel(htmlCTX, centerX, centerY, theta) {
-  htmlCTX.save();
+function drawWheel(ctx, cx, cy, randRotation) {
+  ctx.save();
 
-  htmlCTX.strokeStyle = CIRCLE_COLOR;
-  htmlCTX.lineWidth   = CIRCLE_LINE_W;
-  htmlCTX.beginPath();
-  htmlCTX.arc(centerX, centerY, CIRCLE_R, 0, 2 * Math.PI);
-  htmlCTX.stroke();
+  ctx.strokeStyle = CIRCLE_COLOR;
+  ctx.lineWidth   = CIRCLE_LINE_W;
+  ctx.beginPath();
+  ctx.arc(cx, cy, CIRCLE_R, 0, 2 * Math.PI);
+  ctx.stroke();
 
-  if (WHEEL_MARKER && theta != null) {
-    const rad = angleFromTheta(theta) * Math.PI / 180;
+  if (WHEEL_MARKER && randRotation != null) {
+    const rad = angleFromTheta(randRotation) * Math.PI / 180;
     const ux = Math.cos(rad), uy = -Math.sin(rad);       // y down on canvas
-    htmlCTX.strokeStyle = MARKER_COLOR;
-    htmlCTX.lineCap = 'round';
-    htmlCTX.beginPath();
-    htmlCTX.moveTo(centerX + ux * (CIRCLE_R - MARKER_LEN), centerY + uy * (CIRCLE_R - MARKER_LEN));
-    htmlCTX.lineTo(centerX + ux * (CIRCLE_R + MARKER_LEN), centerY + uy * (CIRCLE_R + MARKER_LEN));
-    htmlCTX.stroke();
+    ctx.strokeStyle = MARKER_COLOR;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx + ux * (CIRCLE_R - MARKER_LEN), cy + uy * (CIRCLE_R - MARKER_LEN));
+    ctx.lineTo(cx + ux * (CIRCLE_R + MARKER_LEN), cy + uy * (CIRCLE_R + MARKER_LEN));
+    ctx.stroke();
   }
 
-  htmlCTX.restore();
+  ctx.restore();
 }
+
 
 // Dynamically track where the mouse is to rotate the color of the probe object
 
-const wheel = { angle: null, radius: null, theta: 0, startTheta: 0, stim: null, detach: null };
+const wheel = { angle: null, radius: null, randRotation: 0, startTheta: 0, stim: null, detach: null };
 
 function attachTracker() {
   const canvas = document.querySelector('canvas');
@@ -306,7 +297,7 @@ function attachTracker() {
     wheel.radius = Math.hypot(x, y);
     wheel.angle  = mod(Math.atan2(y, x) * 180 / Math.PI, 360);
     if (REQUIRE_INSIDE_RING && (wheel.radius < RING_INNER || wheel.radius > RING_OUTER)) return;
-    wheel.theta = thetaFromAngle(wheel.angle);
+    wheel.randRotation = thetaFromAngle(wheel.angle);
   }
 
   canvas.addEventListener('pointermove', onMove);
@@ -402,15 +393,16 @@ async function runExperiment() {
 
   // Extract the contents of the condition matrix
   const timelineVars = conditionMatrix.map((row, i) => {
-    const [rep, context, rep1color, rep2color, novel, theta, probe,
-            pos1x, pos1y, pos2x, pos2y, pos3x, pos3y] = row;
+    const [rep, context, rep1color, rep2color, novel, probe,
+            pos1x, pos1y, pos2x, pos2y, pos3x, pos3y, stimID1, stimID2, stimID3] = row;
 
     // Also get the stimulus names
     const [rep1, rep2, novelStim] = imageMatrix[i];
 
     return {
-        rep, context, theta, probe,
+        rep, context, 
         colors: [rep1color, rep2color, novel],
+        probe,
         positions: [
         { x: pos1x, y: pos1y },
         { x: pos2x, y: pos2y },
@@ -418,12 +410,17 @@ async function runExperiment() {
         ],
         trialCount: i + 1,
         stimNames: [rep1, rep2, novelStim],
+        stimIDs: [stimID1, stimID2, stimID3],
     };
     });
 
+    console.log(timelineVars)
+  // delete srcFileFor and the forEach that populates it
+  function srcUrl(name) { return SRC_ROOT + name; }   // SRC_ROOT already ends in '/'
 
-  // Preload all the images in the stimulus pool, show loading progress on screen & await until done
   const allIds = [...new Set(timelineVars.flatMap(v => v.stimNames))];
+  // Preload all the images in the stimulus pool, show loading progress on screen & await until done
+
   showLoading('Loading stimuli\u2026', 0);
   await preloadSources(allIds, (n, total) => {
     showLoading(`Loading stimuli\u2026 ${n}/${total}`, n / total);
@@ -435,7 +432,7 @@ async function runExperiment() {
     blocks.push(timelineVars.slice(i, i + BLOCK_SIZE));
   }
 
-    console.log(blocks)
+   
   // This is important. We convert the colors of all the images within a given block beforehand for speed.
   // Thus, the rotated variants of each study image is precomputed for the color wheel at the start of each block. 
   function blockPrep(k) {
@@ -472,21 +469,30 @@ async function runExperiment() {
     };
   }
 
+  // Paint the background in the context color
+  const background = () => ({
+    obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+    fill_color: "black", show_start_time: 0
+  });
+
+  const trialState = () => ({
+    stims: "null", pos: "null", colors: "null" 
+  });
+
   const study = {
     type: jsPsychPsychophysics,
     canvas_width: window.innerWidth,
     canvas_height: window.innerHeight,
     background_color: greyBackground,          // placeholder
     stimuli: [
-        { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
-        fill_color: greyBackground, show_start_time: 0 },   // placeholder
+       background(),   // placeholder
         { obj_type: 'manual', show_start_time: 0, show_end_time: STUDY_STIM_MS,
         drawFunc: function (s, canvas, ctx) {
-            const { centerX, centerY } = drawingBox(canvas, ctx);
+            const { cx, cy } = drawingBox(canvas, ctx);
             for (let item = 0; item < 3; item++) {
-            drawStim(ctx, trialState.stims[item],
-                    centerX + trialState.pos[item].x,
-                    centerY * trialState.pos[item].y, imageScale);
+            drawStim(ctx, trialState.stims[item], trialState.colors[item],
+                    cx + trialState.pos[item].x,
+                    cy * trialState.pos[item].y, imageScale);
             }
         }
         }
@@ -495,19 +501,18 @@ async function runExperiment() {
     trial_duration: STUDY_MS,
 
     on_start: function (trial) {
-        const { color } = contextState();          // NOW there's a trial context
-        curContextColor = color;
-        trial.background_color   = color;
-        trial.stimuli[0].fill_color = color;
+
+        const contextIdx = jsPsych.evaluateTimelineVariable('context');   
+        background.fill_color = 'rgb(165, 127, 151)';   
+        console.log(background.fill_color)
 
         trialState.stims = jsPsych.evaluateTimelineVariable('stimNames').map(getLab);
         trialState.pos   = jsPsych.evaluateTimelineVariable('positions');
+        trialState.colors = jsPsych.evaluateTimelineVariable('colors')
     },
 
-    on_finish: function (data) { data.context_color = curContextColor; }
+    //on_finish: function (data) { data.context_color = curContextColor; }
 };
-
-
 
   // Testing stage
   const test = {
@@ -527,9 +532,9 @@ async function runExperiment() {
           const { cx, cy } = drawingBox(canvas, ctx);
 
           // Black circle drawn at current random rotation increment (wheel.theta)
-          drawWheel(ctx, cx, cy, wheel.theta);
+          drawWheel(ctx, cx, cy, wheel.randRotation);
 
-          if (wheel.stim) drawStim(ctx, wheel.stim, wheel.theta, cx, cy, imageScale);
+          if (wheel.stim) drawStim(ctx, wheel.stim, wheel.randRotation, cx, cy, imageScale);
         }
       }
     ],
@@ -539,14 +544,16 @@ async function runExperiment() {
 
     on_start: function () {
       const allItems = jsPsych.evaluateTimelineVariable('stimNames');
+      console.log(allItems)
       const probeStimIndex = jsPsych.evaluateTimelineVariable('probe');
-      const probeStimName = allItems[number(probeStimIndex-1)]; 
+      console.log(probeStimIndex)
+      const probeStimName = allItems[Number(probeStimIndex-1)]; 
 
       console.log(probeStimName)
 
       wheel.stim       = getLab(probeStimName);
       wheel.startTheta = THETA_MIN + Math.floor(Math.random() * N_THETA);
-      wheel.theta      = wheel.startTheta;
+      wheel.randRotation      = wheel.startTheta;
       wheel.angle      = null;
       wheel.radius     = null;
     },
@@ -556,7 +563,7 @@ async function runExperiment() {
     on_finish: function (data) {
       if (wheel.detach) { wheel.detach(); wheel.detach = null; }
 
-      data.trial_part    = 'test';
+      /*data.trial_part    = 'test';
       data.probe_stim    = jsPsych.evaluateTimelineVariable('probeStimId');
       data.probe_slot    = jsPsych.evaluateTimelineVariable('probeSlot');
       data.probe_raw     = jsPsych.evaluateTimelineVariable('probe');
@@ -583,7 +590,7 @@ async function runExperiment() {
         data.click_radius = Math.hypot(x, y);
         const th = jsPsych.evaluateTimelineVariable('theta');
         if (th != null) data.click_error = circDiff(data.click_angle, Number(th));
-      }
+      }*/
     }
   };
 
