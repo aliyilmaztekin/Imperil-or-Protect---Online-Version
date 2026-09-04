@@ -471,7 +471,7 @@ async function runExperiment() {
   ]);
 
   // Unfold the flattened matrix
-  const imageMatrix = reshapeAndSample(flatImageMatrix, nCols, nKeep);
+  const imageMatrix = reshapeAndSample(flatImageMatrix, nCols, 60);
 
   // Extract the contents of the condition matrix
   const timelineVars = conditionMatrix.map((row, i) => {
