@@ -26,7 +26,7 @@
          Forcing 100vw/100vh here decouples layout size from drawing size and
          makes pointer coordinates disagree with drawn coordinates. */
       canvas { display: block; margin: 0 auto; }
-      html, body { height: 100%; overflow: hidden; margin: 0; }
+      html, body { height: 100%; overflow: hidden; margin: 0; background: rgb(128,128,128); }
       #loadscreen {
         position: fixed; inset: 0; display: flex; flex-direction: column;
         align-items: center; justify-content: center; gap: 12px;
@@ -43,38 +43,30 @@
   <script>
 'use strict';
 
-/* ==================================================================== *
- *  CONFIG                                                              *
- * ==================================================================== */
+// CONFIG:
 
 // Study images
-const SRC_ROOT = 'TestObjectsTransparent';
+const SRC_ROOT = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/colorWheelTools/TestObjectsTransparent';
 const SRC_EXT  = '.png';
 
 // The condition matrix determines the events. ImageMatrix determines the image names. 
-const CONDITION_URL = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFiles/conditionMatrix1.json';
-const IMAGE_URL     = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFiles/imageMatrix1.json';
-
-// Rotation angles. MATLAB rendered 1:359; theta 0 (unrotated) is now
-// reachable too, which closes the 1-degree gap in the response space.
-// Set THETA_MIN = 1 to reproduce the old 359-value range exactly.
-const THETA_MIN = 0;
-const N_THETA   = 360;
+const CONDITION_URL = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFiles/conditionMatrixTest.json';
+const IMAGE_URL     = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFiles/imageMatrixTest.json';
 
 // Which conditionMatrix column holds the probe (0-based).
 // Row layout: rep, context, rep1color, rep2color, novel, theta, probe, pos...
-const PROBE_COL = 6;
-const PROBE_MODE = 'auto';        // 'auto' | 'id' | 'slot'
+const probeCol = 6; 
 
 const BLOCK_SIZE = 6;
+const nBlocks = 720/BLOCK_SIZE;
+let breaksRemaining = nBlocks-1;   // or whatever drives the decision
+const nCols = 3;
 const LAB_CACHE  = 12;            // LabStim objects kept resident (~4 MB each)
 
-const PROBE_SCALE = 0.5;
-const STUDY_SCALE = 0.5;
-const POS_Y_SIGN  = 1;            // flip to -1 if study positions come out mirrored
+// Scale the original size of the image
+const imageScale = 0.5;
 
-// The ring is a plain black outline now: it anchors where to move the mouse
-// but carries no hue information. The angle -> theta mapping is unchanged.
+// Color wheel circle 
 const CIRCLE_R      = 215;
 const CIRCLE_LINE_W = 3;
 const CIRCLE_COLOR  = 'rgb(0,0,0)';
@@ -85,6 +77,9 @@ const MARKER_LEN    = 12;          // half-length of the tick, in canvas px
 // Cursor angle -> theta.  theta = mod(WHEEL_DIR * screenAngle + WHEEL_OFFSET)
 const WHEEL_DIR    = -1;
 const WHEEL_OFFSET = 90;
+
+const THETA_MIN = 0;
+const N_THETA   = 360;
 
 // Where the wheel's colours come from.
 //   'stimulus' - the probe's own area-weighted mean L*, chroma and hue,
@@ -101,9 +96,11 @@ const STUDY_MS = 1900, STUDY_STIM_MS = 800;
 const TEST_MS  = 4300, TEST_STIM_MS  = 4000;
 const ITI_MS   = 300;
 
-// Context colors pre-defined here. startContext is a random context chosen initially
+// Context colors pre-defined here.
 const contextColors = ['rgb(165, 127, 151)', 'rgb(135, 174, 116)'];
-const BG_GREY = 'rgb(128, 128, 128)';
+const greyBackground = 'rgb(128, 128, 128)';
+
+// The first context in the experiment is chosen here on a coin flip
 const startContext = Math.round(Math.random());
 
 // Data saving. Leave SAVE_URL empty to skip the server round trip and rely
@@ -116,9 +113,7 @@ const params = new URLSearchParams(location.search);
 const PARTICIPANT_ID = params.get('PROLIFIC_PID') || params.get('id') || `anon-${Date.now()}`;
 const SESSION_ID     = params.get('SESSION_ID') || params.get('session') || '1';
 
-/* ==================================================================== *
- *  SMALL HELPERS                                                       *
- * ==================================================================== */
+// Conversion functions
 
 const mod = (x, m) => ((x % m) + m) % m;
 
@@ -161,117 +156,23 @@ function showLoading(text, frac) {
 }
 const hideLoading = () => loadEl && loadEl.classList.add('hidden');
 
-/* ==================================================================== *
- *  FILENAME PARSING                                                    *
- *                                                                      *
- *  imageMatrix entries look like  stim_obj305-resized_deg078.png.      *
- *  They are no longer fetched - they only tell us WHICH object and at  *
- *  WHICH studied angle. The id is an opaque string; never coerce it    *
- *  to Number.                                                          *
- * ==================================================================== */
-
- // Get 
-
-const NAME_RE_NEW = /^stim([_-]?)(.+)([_-])deg([_-]?)(\d{1,3})\.(png|jpe?g)$/i;
-const NAME_RE_OLD = /^stim([_-]?)(\d+)([_-]?)deg([_-]?)(\d+)\.(png|jpe?g)$/i;
-
-function parseStimName(filename) {
-  const s = String(filename).trim().replace(/^.*[\\/]/, '');
-  const m = NAME_RE_NEW.exec(s) || NAME_RE_OLD.exec(s);
-  if (!m) throw new Error(`Unparseable image name: "${filename}"`);
-  return { id: m[2], theta: parseInt(m[5], 10) };
+// jsonencode in Matlab flattens multi-column matrices into a single column.
+// To re-establish the 900x3 structure, reshape the imageMatrix
+function reshapeMatrix(matrix, nCols) {
+    const nRows = matrix.length / nCols;
+    return Array.from({ length: nRows }, (_, r) =>
+        Array.from({ length: nCols }, (_, c) => matrix[c * nRows + r])
+    );
 }
 
-const idDigits = id => { const m = String(id).match(/\d+/); return m ? Number(m[0]) : null; };
-
-/* ==================================================================== *
- *  PROBE COLUMN INTERPRETATION                                         *
- * ==================================================================== */
-
-function matchIdToken(raw, ids) {
-  const s = String(raw).trim();
-  if (ids.includes(s)) return s;
-  if (/^\d+$/.test(s)) {
-    const n = Number(s);
-    const whole = ids.find(id => /^\d+$/.test(id) && Number(id) === n);
-    if (whole) return whole;
-    const hits = ids.filter(id => idDigits(id) === n);
-    if (hits.length === 1) return hits[0];
+function sizeToViewport(trial) {
+  const w = window.innerWidth, h = window.innerHeight;
+  trial.canvas_width  = w;
+  trial.canvas_height = h;
+  if (trial.stimuli?.[0]?.obj_type === 'rect') {
+    trial.stimuli[0].width  = w;
+    trial.stimuli[0].height = h;
   }
-  return null;
-}
-
-function inferProbeMode(conditionMatrix, imageMatrix) {
-  const n = conditionMatrix.length;
-  let idHits = 0, slotHits = 0;
-
-  for (let i = 0; i < n; i++) {
-    const ids = imageMatrix[i].map(f => parseStimName(f).id);
-    const raw = String(conditionMatrix[i][PROBE_COL]).trim();
-    if (matchIdToken(raw, ids)) idHits++;
-    const v = Number(raw);
-    if (/^\d+$/.test(raw) && v >= 1 && v <= ids.length) slotHits++;
-  }
-
-  const pctId = idHits / n, pctSlot = slotHits / n;
-  console.log(`probe column: id-match ${(pctId*100).toFixed(0)}%, slot-index ${(pctSlot*100).toFixed(0)}%`);
-
-  if (PROBE_MODE !== 'auto') return PROBE_MODE;
-  if (pctId >= 0.99) {
-    if (pctSlot >= 0.99) console.warn('Probe column is ambiguous (valid as both id and slot). Assuming "id".');
-    return 'id';
-  }
-  if (pctSlot >= 0.99) return 'slot';
-  throw new Error(
-    `Cannot interpret conditionMatrix column ${PROBE_COL + 1}: id-match ` +
-    `${(pctId*100).toFixed(0)}%, slot-index ${(pctSlot*100).toFixed(0)}%. ` +
-    `Check the column index or set PROBE_MODE manually.`);
-}
-
-/* ==================================================================== *
- *  MATLAB CELL RESHAPE                                                 *
- *                                                                      *
- *  jsonencode flattens a cell array column-major, so a 900x3 cell       *
- *  arrives as 2700 loose strings.                                       *
- * ==================================================================== */
-
-function normalizeImageMatrix(raw, nTrials) {
-  if (!Array.isArray(raw)) raw = Object.values(raw);
-
-  if (Array.isArray(raw[0])) {
-    if (raw.length !== nTrials) {
-      throw new Error(`imageMatrix has ${raw.length} rows, conditionMatrix has ${nTrials}`);
-    }
-    return raw.map(r => r.slice(0, 3));
-  }
-
-  if (raw.length !== 3 * nTrials) {
-    throw new Error(`imageMatrix has ${raw.length} entries; expected ${3*nTrials} or ${nTrials} nested rows.`);
-  }
-
-  const colMajor = Array.from({ length: nTrials }, (_, i) => [raw[i], raw[i+nTrials], raw[i+2*nTrials]]);
-  const rowMajor = Array.from({ length: nTrials }, (_, i) => [raw[3*i], raw[3*i+1], raw[3*i+2]]);
-
-  // The two repeated items hold still across a mini-block; the novel one
-  // does not. Whichever reshape reproduces that is the right one.
-  const score = m => {
-    let hits = 0, total = 0;
-    for (let b = 0; b + BLOCK_SIZE <= m.length; b += BLOCK_SIZE) {
-      total++;
-      const head = m[b];
-      const held = m.slice(b, b+BLOCK_SIZE).every(r => r[0] === head[0] && r[1] === head[1]);
-      const moves = new Set(m.slice(b, b+BLOCK_SIZE).map(r => r[2])).size > 1;
-      if (held && moves) hits++;
-    }
-    return total ? hits / total : 0;
-  };
-
-  const sCol = score(colMajor), sRow = score(rowMajor);
-  console.log(`imageMatrix reshape: column-major ${(sCol*100).toFixed(0)}%, row-major ${(sRow*100).toFixed(0)}%`);
-  if (Math.max(sCol, sRow) < 0.9) {
-    console.warn('Neither reshape matches the expected 2-repeats + 1-novel structure. Check BLOCK_SIZE.');
-  }
-  return sCol >= sRow ? colMajor : rowMajor;
 }
 
 /* ==================================================================== *
@@ -283,12 +184,13 @@ const srcBitmaps = new Map();     // id -> ImageData (straight alpha)
 const labCache   = new Map();     // id -> LabStim  (insertion-ordered LRU)
 
 function srcUrl(id) {
-  return `${SRC_ROOT}/${srcFileFor.get(id) || (id + SRC_EXT)}`;
+  return `${SRC_ROOT}/${srcFileFor.get(id) || (id)}`;
 }
 
 function decodeToImageData(url) {
   return new Promise((resolve, reject) => {
     const img = new Image();
+    img.crossOrigin = 'anonymous'; 
     img.onload = () => {
       const c = document.createElement('canvas');
       c.width = img.naturalWidth; c.height = img.naturalHeight;
@@ -303,6 +205,8 @@ function decodeToImageData(url) {
   });
 }
 
+// Pre-load all the images in a block
+// To be called upon during breaks
 async function preloadSources(ids, onProgress) {
   let done = 0;
   const CONCURRENCY = 8;
@@ -333,43 +237,57 @@ function getLab(id) {
   return st;
 }
 
-/* ==================================================================== *
- *  RENDERER                                                            *
- *                                                                      *
- *  One scratch canvas per stimulus. render() early-returns when theta   *
- *  has not changed, so pointermove events that outrun the display cost  *
- *  nothing.                                                             *
- * ==================================================================== */
-
+// Image rendering function
 const scratchFor = new WeakMap();
+const scratchFor2 = new WeakMap();
 
-function drawStim(ctx, stim, theta, cx, cy, scale) {
+/*
+ * The cache key must be the hue that was actually rendered. Comparing against
+ * `theta` while storing `theta + randomRotate` meant the guard never matched,
+ * so every frame re-rendered, and one cursor position per trial silently kept
+ * a stale frame on screen.
+ */
+function drawStim(ctx, stim, theta, cx, cy, scale, randomRotate) {
   let s = scratchFor.get(stim);
   if (!s) {
     const c = document.createElement('canvas');
     c.width = stim.width; c.height = stim.height;
     s = { canvas: c, ctx: c.getContext('2d', { colorSpace: 'srgb' }),
-          img: new ImageData(stim.out, stim.width, stim.height), theta: null };
+          img: new ImageData(stim.out, stim.width, stim.height), hue: null };
     scratchFor.set(stim, s);
   }
-  if (s.theta !== theta) {
-    stim.render(theta);
+  const hue = mod(Number(theta) + Number(randomRotate || 0), 360);
+  if (s.hue !== hue) {
+    stim.render(hue);
     s.ctx.putImageData(s.img, 0, 0);
-    s.theta = theta;
+    s.hue = hue;
   }
   const w = stim.width * scale, h = stim.height * scale;
   ctx.drawImage(s.canvas, cx - w / 2, cy - h / 2, w, h);
 }
 
-/* ==================================================================== *
- *  RESPONSE RING                                                       *
- *                                                                      *
- *  A plain black outline circle. The probe at the centre still          *
- *  recolours with the cursor angle; the ring itself no longer shows     *
- *  the colour space.                                                    *
- * ==================================================================== */
+function drawStimGrey (ctx, stim, theta, cx, cy, scale){
+  let s = scratchFor2.get(stim);
+  if (!s) {
+    const c = document.createElement('canvas');
+    c.width = stim.width; c.height = stim.height;
+    s = { canvas: c, ctx: c.getContext('2d', { colorSpace: 'srgb' }),
+          img: new ImageData(stim.out, stim.width, stim.height), hue: null };
+    scratchFor2.set(stim, s);
+  }
+  const hue = mod(Number(theta), 360);
+  if (s.hue !== hue) {
+    stim.render(hue);
+    s.ctx.putImageData(s.img, 0, 0);
+    s.hue = hue;
+  }
+  const w = stim.width * scale, h = stim.height * scale;
+  ctx.drawImage(s.canvas, cx - w / 2, cy - h / 2, w, h);
+  
+}
 
-function drawWheel(ctx, cx, cy, theta) {
+
+function drawWheel(ctx, cx, cy, currentTheta) {
   ctx.save();
 
   ctx.strokeStyle = CIRCLE_COLOR;
@@ -378,8 +296,8 @@ function drawWheel(ctx, cx, cy, theta) {
   ctx.arc(cx, cy, CIRCLE_R, 0, 2 * Math.PI);
   ctx.stroke();
 
-  if (WHEEL_MARKER && theta != null) {
-    const rad = angleFromTheta(theta) * Math.PI / 180;
+  if (WHEEL_MARKER && currentTheta != null && Number.isFinite(Number(currentTheta))) {
+    const rad = angleFromTheta(Number(currentTheta)) * Math.PI / 180;
     const ux = Math.cos(rad), uy = -Math.sin(rad);       // y down on canvas
     ctx.strokeStyle = MARKER_COLOR;
     ctx.lineCap = 'round';
@@ -392,11 +310,18 @@ function drawWheel(ctx, cx, cy, theta) {
   ctx.restore();
 }
 
-/* ==================================================================== *
- *  CURSOR TRACKING                                                     *
- * ==================================================================== */
 
-const wheel = { angle: null, radius: null, theta: 0, startTheta: 0, stim: null, detach: null };
+// Dynamically track where the mouse is to rotate the color of the probe object
+
+const wheel = {
+  angle: null, radius: null,
+  theta: null,          // cursor position in wheel space
+  clickTheta: null,     // theta frozen at the moment of the click
+  randomRotation: 0,    // per-trial offset between wheel space and hue
+  targetHue: null,
+  cx: null, cy: null,   // drawing-unit centre, for the click cross-check
+  stim: null, detach: null
+};
 
 function attachTracker() {
   const canvas = document.querySelector('canvas');
@@ -414,7 +339,12 @@ function attachTracker() {
 
   const cx = box.left + box.width / 2, cy = box.top + box.height / 2;
 
-  function onMove(e) {
+  // Centre in drawing units, so on_finish can convert click_x / click_y
+  // (which are canvas-relative, not centre-relative) into an angle.
+  wheel.cx = g.cx;
+  wheel.cy = g.cy;
+
+  function onMove(e) {  
     const x =  (e.clientX - cx) * k;
     const y = -(e.clientY - cy) * k;
     wheel.radius = Math.hypot(x, y);
@@ -423,8 +353,20 @@ function attachTracker() {
     wheel.theta = thetaFromAngle(wheel.angle);
   }
 
+  // Freeze the response at the instant of the click. wheel.theta is what
+  // actually drove the rendered hue, so it is the response, not a
+  // reconstruction from click coordinates.
+  function onDown(e) {
+    onMove(e);
+    wheel.clickTheta = wheel.theta;
+  }
+
   canvas.addEventListener('pointermove', onMove);
-  wheel.detach = () => canvas.removeEventListener('pointermove', onMove);
+  canvas.addEventListener('pointerdown', onDown);
+  wheel.detach = () => {
+    canvas.removeEventListener('pointermove', onMove);
+    canvas.removeEventListener('pointerdown', onDown);
+  };
 }
 
 /* ==================================================================== *
@@ -479,12 +421,11 @@ function downloadCsv(jsPsych) {
   }
 }
 
-/* ==================================================================== *
- *  EXPERIMENT                                                          *
- * ==================================================================== */
+// EXPERIMENT SCRIPT
 
 async function runExperiment() {
 
+  // Save data at the end of the experiment
   const jsPsych = initJsPsych({
     on_finish: async function () {
       showLoading('Saving your data\u2026');
@@ -494,114 +435,79 @@ async function runExperiment() {
     }
   });
 
+  // Save data at the beginning of each trial
   jsPsych.data.addProperties({
     participant_id: PARTICIPANT_ID,
     session: SESSION_ID,
     start_context: startContext,
-    theta_min: THETA_MIN,
-    n_theta: N_THETA,
     screen_w: window.innerWidth,
     screen_h: window.innerHeight,
     dpr: window.devicePixelRatio || 1,
     ua: navigator.userAgent
   });
 
-  /* ---- condition files ---- */
-
+  // Fetch conditionMatrix and imageMatrix & await until unpacked. 
   showLoading('Loading condition files\u2026');
-
-  const [conditionMatrix, rawImageMatrix] = await Promise.all([
+  const [conditionMatrix, flatImageMatrix] = await Promise.all([
     fetch(CONDITION_URL).then(r => r.json()),
     fetch(IMAGE_URL).then(r => r.json())
   ]);
 
-  const nTrials = conditionMatrix.length;
-  const imageMatrix = normalizeImageMatrix(rawImageMatrix, nTrials);
-  const probeMode = inferProbeMode(conditionMatrix, imageMatrix);
+  // Unfold the flattened matrix
+  const imageMatrix = reshapeMatrix(flatImageMatrix, nCols);
 
-
-  /* ---- timeline variables ---- */
-
-  let unmatchedProbes = 0;
-
+  // Extract the contents of the condition matrix
   const timelineVars = conditionMatrix.map((row, i) => {
-    const [rep, context, rep1color, rep2color, novel, theta, probe,
-           pos1x, pos1y, pos2x, pos2y, pos3x, pos3y] = row;
+    const [rep, context, rep1color, rep2color, novel, probe,
+            pos1x, pos1y, pos2x, pos2y, pos3x, pos3y, stimID1, stimID2, stimID3] = row;
 
-    const parsed = imageMatrix[i].map(parseStimName);
-    const ids    = parsed.map(p => p.id);
+    // Also get the stimulus names
+    const [rep1, rep2, novelStim] = imageMatrix[i];
 
-    let probeStimId = null;
-    if (probeMode === 'slot') {
-      const v = Number(probe);
-      if (Number.isInteger(v) && v >= 1 && v <= ids.length) probeStimId = ids[v - 1];
-    } else {
-      probeStimId = matchIdToken(probe, ids);
-    }
+    const deadWeight = new Array(900).fill(0);
 
-    let probeSlot = probeStimId === null ? -1 : ids.indexOf(probeStimId);
-    if (probeSlot === -1) { unmatchedProbes++; probeSlot = 0; probeStimId = ids[0]; }
-
-    // The studied hue is the degree in that item's own filename. This is the
-    // authoritative value; the rep1color/rep2color/novel columns are carried
-    // through as a cross-check rather than used for scoring.
     return {
-      rep, context, theta, probe,
-      rep1color, rep2color, novel,
-      probeStimId, probeSlot,
-      targetTheta: parsed[probeSlot].theta,
-      probeResolved: probeStimId !== null,
-      ids,
-      studyThetas: parsed.map(p => p.theta),
-      pos: [[pos1x, pos1y], [pos2x, pos2y], [pos3x, pos3y]]
+        deadWeight,
+        rep, context, 
+        colors: [rep1color, rep2color, novel],
+        probe,
+        positions: [
+        { x: pos1x, y: pos1y },
+        { x: pos2x, y: pos2y },
+        { x: pos3x, y: pos3y },
+        ],
+        trialCount: i + 1,
+        stimNames: [rep1, rep2, novelStim],
+        stimIDs: [stimID1, stimID2, stimID3],
     };
-  });
+    });
 
+  // delete srcFileFor and the forEach that populates it
+  function srcUrl(name) { return SRC_ROOT + name; }   // SRC_ROOT already ends in '/'
 
-  if (unmatchedProbes) {
-    console.warn(`${unmatchedProbes}/${nTrials} trials: probe value in column ` +
-                 `${PROBE_COL + 1} could not be resolved (mode "${probeMode}"). ` +
-                 `Those trials fell back to slot 1; their hue_error is NOT trustworthy.`);
-  }
-
-  // Cross-check the colour columns against the filenames, once, loudly.
-  {
-    const mismatched = timelineVars.filter(v => {
-      const cols = [v.rep1color, v.rep2color, v.novel].map(Number);
-      return v.studyThetas.some((t, k) => Number.isFinite(cols[k]) && cols[k] !== t);
-    }).length;
-    if (mismatched) {
-      console.warn(`${mismatched}/${nTrials} trials: the rep1color/rep2color/novel ` +
-                   `columns disagree with the degrees in imageMatrix filenames. ` +
-                   `Filenames are being used. Reconcile this before analysis.`);
-    }
-  }
-
-  /* ---- preload source PNGs ---- */
-
-  const allIds = [...new Set(timelineVars.flatMap(v => v.ids))];
-  console.log(`${nTrials} trials, ${allIds.length} distinct objects`);
+  const allIds = [...new Set(timelineVars.flatMap(v => v.stimNames))];
+  // Preload all the images in the stimulus pool, show loading progress on screen & await until done
 
   showLoading('Loading stimuli\u2026', 0);
   await preloadSources(allIds, (n, total) => {
     showLoading(`Loading stimuli\u2026 ${n}/${total}`, n / total);
   });
 
-  /* ---- blocks ---- */
-
+  // Chop the entire events list into blocks. 
   const blocks = [];
   for (let i = 0; i < timelineVars.length; i += BLOCK_SIZE) {
     blocks.push(timelineVars.slice(i, i + BLOCK_SIZE));
   }
 
-  // Convert this block's objects to Lab up front (~60 ms each) so no trial
-  // ever pays for it mid-stream.
+   
+  // This is important. We convert the colors of all the images within a given block beforehand for speed.
+  // Thus, the rotated variants of each study image is precomputed for the color wheel at the start of each block. 
   function blockPrep(k) {
     return {
       type: jsPsychCallFunction,
       async: true,
       func: function (done) {
-        const ids = [...new Set(blocks[k].flatMap(v => v.ids))];
+        const ids = [...new Set(blocks[k].flatMap(v => v.stimNames))];
         showLoading(`Preparing block ${k + 1} of ${blocks.length}\u2026`, 0);
         let n = 0;
         const step = () => {
@@ -630,87 +536,118 @@ async function runExperiment() {
     };
   }
 
-  /* ---- trials ---- */
-
-  const trialState = { study: null, wheelRef: null };
-
-  // Get the context color 
-  const ctxColor = () => {
-    const raw = jsPsych.evaluateTimelineVariable('context');
-    const idx = (raw === null || raw === undefined || raw === '') ? startContext : Number(raw);
-    return contextColors[idx] ?? contextColors[0];
-  };
-
-  // Paint the background in the context color
-  const bgRect = () => ({
-    obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
-    fill_color: ctxColor, show_start_time: 0
+  const trialState = () => ({
+    stims: "null", pos: "null", colors: "null", context: "null" 
   });
 
-  // Stimulus presentation (encoding stage)
-  const study = {
-    type: jsPsychPsychophysics,
-    canvas_width: window.innerWidth,
-    canvas_height: window.innerHeight,
-    background_color: BG_GREY,
-    stimuli: [
-      bgRect(),
-      {
-        obj_type: 'manual',
-        show_start_time: 0,
-        show_end_time: STUDY_STIM_MS,
-        drawFunc: function (s, canvas, ctx) {
-          const { cx, cy } = drawingBox(canvas, ctx);
-          const st = trialState.study;
-          for (let k = 0; k < 3; k++) {
-            drawStim(ctx, st.stims[k], st.thetas[k],
-                     cx + st.pos[k][0], cy + POS_Y_SIGN * st.pos[k][1], STUDY_SCALE);
-          }
+const study = {
+  type: jsPsychPsychophysics,
+  canvas_width: window.innerWidth,
+  canvas_height: window.innerHeight,
+  background_color: greyBackground,
+  origin_center: false,
+
+  stimuli: [
+    // Background — fill_color gets overwritten in on_start
+    { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+      fill_color: greyBackground, show_start_time: 0 },
+
+    { obj_type: 'manual', show_start_time: 0, show_end_time: STUDY_STIM_MS,
+      drawFunc: function (s, canvas, ctx) {
+        const { cx, cy } = drawingBox(canvas, ctx);
+        for (let item = 0; item < 3; item++) {
+          drawStim(ctx, trialState.stims[item], trialState.colors[item],
+                   cx + trialState.pos[item].x,
+                   cy + trialState.pos[item].y, imageScale, 0);
         }
       }
-    ],
-    choices: 'NO_KEYS',
-    trial_duration: STUDY_MS,
-    on_start: function () {
-      trialState.study = {
-        stims:  jsPsych.evaluateTimelineVariable('ids').map(getLab),
-        thetas: jsPsych.evaluateTimelineVariable('studyThetas').map(Number),
-        pos:    jsPsych.evaluateTimelineVariable('pos').map(p => p.map(Number))
-      };
-    },
-    data: { trial_part: 'study' }
-  };
+    }
+  ],
+  choices: 'NO_KEYS',
+  trial_duration: STUDY_MS,
+
+  on_start: function (trial) {
+    sizeToViewport(trial);
+    const trialCount = jsPsych.evaluateTimelineVariable('trialCount');
+
+    let curContextColor;                      // declared once, in function scope
+    if (trialCount == 1) {
+      curContextColor = contextColors[Number(startContext)];
+    } else {
+      const cmd = jsPsych.evaluateTimelineVariable('context');
+      curContextColor = Number(cmd) === 1 ? contextColors[0] : contextColors[1];
+    }
+
+    trialState.context = curContextColor;
+    trial.stimuli[0].fill_color = curContextColor;   // <-- the actual update
+
+    trialState.stims  = jsPsych.evaluateTimelineVariable('stimNames').map(getLab);
+    trialState.pos    = jsPsych.evaluateTimelineVariable('positions');
+    trialState.colors = jsPsych.evaluateTimelineVariable('colors');
+  },
+
+  on_finish: function (data) { 
+    data.context_color = trialState.context; 
+  }
+};
 
   // Testing stage
   const test = {
     type: jsPsychPsychophysics,
     canvas_width: window.innerWidth,
     canvas_height: window.innerHeight,
-    background_color: BG_GREY,
+    background_color: greyBackground,
+    origin_center: false,
+
     stimuli: [
-      bgRect(),
+      // Background — fill_color gets overwritten in on_start
+    { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+      fill_color: greyBackground, show_start_time: 0 },
       {
         obj_type: 'manual',
         show_start_time: 0,
-        show_end_time: TEST_STIM_MS,
+        show_end_time: TEST_STIM_MS, // Maximum allowed test duration
+        
         drawFunc: function (s, canvas, ctx) {
           const { cx, cy } = drawingBox(canvas, ctx);
-          drawWheel(ctx, cx, cy, wheel.theta);
-          if (wheel.stim) drawStim(ctx, wheel.stim, wheel.theta, cx, cy, PROBE_SCALE);
+          if (!wheel.stim) return;
+
+          // Before the cursor has moved, theta is null: draw the ring with no
+          // marker and the un-rotated stimulus. Exactly one of the two
+          // branches runs, so the pre-response frame is not overpainted.
+          if (wheel.theta == null) {
+            drawWheel(ctx, cx, cy, null);
+            drawStimGrey(ctx, wheel.stim, 0, cx, cy, imageScale);
+          } else {
+            drawWheel(ctx, cx, cy, wheel.theta);
+            drawStim(ctx, wheel.stim, wheel.theta, cx, cy, imageScale, wheel.randomRotation);
+          }
         }
       }
     ],
-    response_type: 'mouse',
+    response_type: 'mouse', // Allow a mouse click to end testing
     response_start_time: 0,
     trial_duration: TEST_MS,
 
-    on_start: function () {
-      const id = jsPsych.evaluateTimelineVariable('probeStimId');
-      wheel.stim       = getLab(id);
-      wheel.startTheta = THETA_MIN + Math.floor(Math.random() * N_THETA);
-      wheel.theta      = wheel.startTheta;
+    on_start: function (trial) {
+      sizeToViewport(trial);
+      const allItems = jsPsych.evaluateTimelineVariable('stimNames');
+      const probeStimIndex = jsPsych.evaluateTimelineVariable('probe');
+      const probeStimName = allItems[Number(probeStimIndex-1)]; 
+
+      const randomRotation = () =>
+          jsPsych.randomization.sampleWithoutReplacement([45, 90, 135, 180, 225, 270, 315], 1)[0];
+      wheel.randomRotation = randomRotation();
+
+      wheel.targetHue = Number(trialState.colors[Number(probeStimIndex - 1)]);
+      trial.stimuli[0].fill_color = trialState.context;
+
+      wheel.stim       = getLab(probeStimName);
+
       wheel.angle      = null;
       wheel.radius     = null;
+      wheel.theta      = null;
+      wheel.clickTheta = null;
     },
 
     on_load: function () { attachTracker(); },
@@ -718,56 +655,90 @@ async function runExperiment() {
     on_finish: function (data) {
       if (wheel.detach) { wheel.detach(); wheel.detach = null; }
 
-      data.trial_part    = 'test';
-      data.probe_stim    = jsPsych.evaluateTimelineVariable('probeStimId');
-      data.probe_slot    = jsPsych.evaluateTimelineVariable('probeSlot');
-      data.probe_raw     = jsPsych.evaluateTimelineVariable('probe');
-      data.probe_resolved = jsPsych.evaluateTimelineVariable('probeResolved');
-      data.rep           = jsPsych.evaluateTimelineVariable('rep');
-      data.context       = jsPsych.evaluateTimelineVariable('context');
+      // Save the data at the end of each trial
+      data.event = 'test';
+      data.error = 'null';
+      data.time = 'null';
 
-      data.start_hue    = wheel.startTheta;
-      data.response_hue = wheel.theta;
-      data.target_hue   = Number(jsPsych.evaluateTimelineVariable('targetTheta'));
-      data.hue_error    = circDiff(data.response_hue, data.target_hue);
+      /*
+       * Hue and wheel angle live in two spaces separated by the per-trial
+       * offset R:
+       *
+       *     displayed hue = mod(theta + R, 360)          (see drawStim)
+       *
+       * so the reported hue is the clicked theta plus R, and the position the
+       * participant should have clicked is mod(targetHue - R, 360).
+       * WHEEL_OFFSET is already consumed inside thetaFromAngle, so it must not
+       * appear again here.
+       */
+      const R = Number(wheel.randomRotation) || 0;
+      const respTheta = (wheel.clickTheta != null) ? wheel.clickTheta : wheel.theta;
+
+      data.rotation      = R;
+      data.rawAngle      = (respTheta == null) ? null : mod(respTheta, 360);
+      data.adjustedAngle = (respTheta == null) ? null : mod(respTheta + R, 360);
+
+      data.response_hue  = data.adjustedAngle;                  // hue reported
+      data.target_hue    = wheel.targetHue;                     // hue at study
+      data.target_theta  = mod(wheel.targetHue - R, 360);       // correct click position
 
       data.cursor_angle  = wheel.angle;
       data.cursor_radius = wheel.radius;
-      data.responded     = wheel.angle !== null;
+      data.responded     = respTheta != null;
+
+      // DATA TO SAVE:
+
+      // Reaction times
+      // Move onset time
+      data.angularError  = data.responded
+        ? circDiff(data.response_hue, wheel.targetHue)
+        : null;
+
+        console.log(data.angularError)
 
       const ref = trialState.wheelRef;
       if (ref) { data.wheel_L = ref.L; data.wheel_C = ref.C; data.wheel_h0 = ref.h; }
 
-      if (data.click_x !== null && data.click_x !== undefined) {
-        const x =  data.click_x - data.center_x;
-        const y = -(data.click_y - data.center_y);
-        data.click_angle  = mod(Math.atan2(y, x) * 180 / Math.PI, 360);
+      // Independent cross-check derived from the click coordinates. click_x /
+      // click_y are canvas-relative with origin_center false, so the centre has
+      // to be subtracted before taking the angle. click_theta should match
+      // rawAngle; a persistent discrepancy means the click coordinates are not
+      // in drawing units.
+      if (data.click_x != null && wheel.cx != null) {
+        const x =  (data.click_x - wheel.cx);
+        const y = -(data.click_y - wheel.cy);
+        data.click_theta  = thetaFromAngle(mod(Math.atan2(y, x) * 180 / Math.PI, 360));
         data.click_radius = Math.hypot(x, y);
-        const th = jsPsych.evaluateTimelineVariable('theta');
-        if (th != null) data.click_error = circDiff(data.click_angle, Number(th));
       }
+
+      wheel.theta      = null;
+      wheel.clickTheta = null;
     }
   };
 
-  // Inter-Trial
-  const iti = {
-    type: jsPsychPsychophysics,
-    canvas_width: window.innerWidth,
-    canvas_height: window.innerHeight,
-    background_color: BG_GREY,
-    stimuli: [{
-      obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
-      fill_color: BG_GREY, show_start_time: 0
-    }],
-    choices: 'NO_KEYS',
-    trial_duration: ITI_MS,
-    data: { trial_part: 'iti' }
-  };
+  // Inter-Trial Interval
+const iti = {
+  type: jsPsychPsychophysics,
+  canvas_width: window.innerWidth,
+  canvas_height: window.innerHeight,
+  background_color: greyBackground,
+  stimuli: [{
+    obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+    fill_color: greyBackground, show_start_time: 0
+  }],
+  choices: 'NO_KEYS',
+  trial_duration: ITI_MS,
+  data: { trial_part: 'iti' },
+  on_start: function (trial) {
+    sizeToViewport(trial);
+  }
+};
 
   /* ---- timeline ---- */
 
   const timeline = [];
 
+  // Ask the person to switch to fullscreen
   timeline.push({
     type: jsPsychFullscreen,
     fullscreen_mode: true,
@@ -775,6 +746,7 @@ async function runExperiment() {
     button_label: 'Begin'
   });
 
+  // Experiment intructions
   timeline.push({
     type: jsPsychHtmlKeyboardResponse,
     stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
@@ -788,8 +760,54 @@ async function runExperiment() {
     on_finish: () => hideLoading()
   });
 
+
+const BREAK_SECONDS = 120;   // 2 minutes
+let breakTimerId = null;
+
+function startCountdown(seconds, display) {
+  const endTime = Date.now() + seconds * 1000;
+
+  const render = () => {
+    const remaining = Math.max(0, Math.round((endTime - Date.now()) / 1000));
+    const m = String(Math.floor(remaining / 60)).padStart(2, '0');
+    const s = String(remaining % 60).padStart(2, '0');
+    if (display) display.textContent = `${m}:${s}`;
+  };
+
+  render();                                  // paint immediately, no blank first second
+  return setInterval(render, 250);           // sub-second ticks so it never looks stalled
+}
+
+const breakTrial = {
+  type: jsPsychHtmlKeyboardResponse,
+  stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
+    <h2>Break</h2>
+    <p>Please take a break.</p>
+    <p>Time remaining: <span id="break-timer" style="font-variant-numeric:tabular-nums">--:--</span></p>
+    <p>When ready to continue, press any key.</p></div>`,
+  choices: 'ALL_KEYS',
+  trial_duration: BREAK_SECONDS * 1000,
+  on_load: () => {
+    document.body.style.backgroundColor = 'rgb(128,128,128)';
+    breakTimerId = startCountdown(BREAK_SECONDS, document.querySelector('#break-timer'));
+  },
+  on_finish: () => {
+    document.body.style.backgroundColor = '';
+    clearInterval(breakTimerId);
+    breakTimerId = null;
+    hideLoading();
+  }
+};
+
+  // Schedule block-wide events:
+  // 1) Prepare the stimuli. 
+  // 2) Play out the actual trials. 
+  // 3) Save this block's data.
   blocks.forEach((vars, k) => {
     timeline.push(blockPrep(k));
+    if (k > 0 && k < blocks.length - 1) {
+      timeline.push(breakTrial);
+    };
     timeline.push({ timeline: [study, test, iti], timeline_variables: vars });
     timeline.push(blockSave(k));
   });
@@ -800,6 +818,7 @@ async function runExperiment() {
       <h2>Finished</h2><p>Press any key to save your data.</p></div>`,
     choices: 'ALL_KEYS'
   });
+
 
   hideLoading();
   await jsPsych.run(timeline);
