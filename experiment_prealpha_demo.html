@@ -474,7 +474,7 @@ async function runExperiment() {
   const imageMatrix = reshapeAndSample(flatImageMatrix, nCols, 60);
 
   // Extract the contents of the condition matrix
-  const timelineVars = conditionMatrix.map((row, i) => {
+  const timelineVars = conditionMatrix.slice(0, 60).map((row, i) => {
     const [rep, context, rep1color, rep2color, novel, probe,
             pos1x, pos1y, pos2x, pos2y, pos3x, pos3y, stimID1, stimID2, stimID3] = row;
 
