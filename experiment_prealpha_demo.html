@@ -470,13 +470,18 @@ async function runExperiment() {
     fetch(IMAGE_URL).then(r => r.json())
   ]);
 
+  const startRow = 1;
+
   // Unfold the flattened matrix
-  const imageMatrix = reshapeAndSample(flatImageMatrix, nCols, 60);
+  const imageMatrix0 = reshapeAndSample(flatImageMatrix, nCols, 60);
+  const imageMatrix = imageMatrix0.slice(startRow, startRow + 60); 
 
   // Extract the contents of the condition matrix
-  const timelineVars = conditionMatrix.slice(0, 60).map((row, i) => {
+  const timelineVars = conditionMatrix.slice(startRow, startRow+60).map((row, i) => {
     const [rep, context, rep1color, rep2color, novel, probe,
             pos1x, pos1y, pos2x, pos2y, pos3x, pos3y, stimID1, stimID2, stimID3] = row;
+
+
 
     // Also get the stimulus names
     const [rep1, rep2, novelStim] = imageMatrix[i];
