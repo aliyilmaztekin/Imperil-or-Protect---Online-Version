@@ -57,8 +57,12 @@ const IMAGE_URL     = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Onl
 // Row layout: rep, context, rep1color, rep2color, novel, theta, probe, pos...
 const probeCol = 6; 
 
-const BLOCK_SIZE = 6;
-const nBlocks = 720/BLOCK_SIZE;
+const nTrials = 18;
+const seriesLength = 6;
+const nSeries = nTrials/seriesLength;
+const nBlocks = nTrials/seriesLength;
+const BLOCK_SIZE = nTrials/nBlocks;
+
 let breaksRemaining = nBlocks-1;   // or whatever drives the decision
 const nCols = 3;
 const LAB_CACHE  = 12;            // LabStim objects kept resident (~4 MB each)
@@ -174,7 +178,7 @@ function shuffle(arr) {
     return a;
 }
 
-const nKeep = Number(60);
+const nKeep = (nBlocks*seriesLength)
 
 function reshapeAndSample(matrix, nCols, nKeep) {
     const rows = reshapeMatrix(matrix, nCols);
@@ -448,7 +452,7 @@ async function runExperiment() {
       showLoading('Saving your data\u2026');
       const res = await postRows(jsPsych.data.get().values(), 'final');
       if (!res.ok && DOWNLOAD_CSV_FALLBACK) downloadCsv(jsPsych);
-      showLoading('Done. Thank you \u2014 you may close this window.');
+      showLoading('Done. Thank you for your participantion');
     }
   });
 
@@ -473,14 +477,12 @@ async function runExperiment() {
   const startRow = 1;
 
   // Unfold the flattened matrix
-  const imageMatrix0 = reshapeAndSample(flatImageMatrix, nCols, 60);
-  const imageMatrix = imageMatrix0.slice(startRow, startRow + 60); 
+  const imageMatrix = reshapeAndSample(flatImageMatrix, nCols, nTrials);
 
   // Extract the contents of the condition matrix
-  const timelineVars = conditionMatrix.slice(startRow, startRow+60).map((row, i) => {
+  const timelineVars = conditionMatrix.slice(startRow, startRow+nTrials).map((row, i) => {
     const [rep, context, rep1color, rep2color, novel, probe,
             pos1x, pos1y, pos2x, pos2y, pos3x, pos3y, stimID1, stimID2, stimID3] = row;
-
 
 
     // Also get the stimulus names
@@ -530,12 +532,12 @@ async function runExperiment() {
       async: true,
       func: function (done) {
         const ids = [...new Set(blocks[k].flatMap(v => v.stimNames))];
-        showLoading(`Preparing block ${k + 1} of ${blocks.length}\u2026`, 0);
+        showLoading(`Preparing block ${k + 1} of ${nBlocks}\u2026`, 0);
         let n = 0;
         const step = () => {
           if (n < ids.length) {
             getLab(ids[n++]);
-            showLoading(`Preparing block ${k + 1} of ${blocks.length}\u2026`, n / ids.length);
+            showLoading(`Preparing block ${k + 1} of ${nBlocks}\u2026`, n / ids.length);
             setTimeout(step, 0);              // yield so the bar actually paints
           } else {
             hideLoading();
@@ -829,7 +831,7 @@ const breakTrial = {
   // 3) Save this block's data.
   blocks.forEach((vars, k) => {
     timeline.push(blockPrep(k));
-    if (k > 0 && k < blocks.length - 1) {
+    if (k > 0) {
       timeline.push(breakTrial);
     };
     timeline.push({ timeline: [study, test, iti], timeline_variables: vars });
