@@ -857,13 +857,12 @@ const study = {
     let curContextColor;                      // declared once, in function scope
     if (trialCount == 1) {
       curContextColor = contextColors[Number(startContext)];
-      console.log(curContextColor)
     } else {
       const cmd = jsPsych.evaluateTimelineVariable('context');
       if (Number(cmd) == 1) {
-        if (Number(startContext == 0)) {
+        if (trialState.context === 'rgb(165, 127, 151)') {
           curContextColor = contextColors[1];
-        } else if (Number(startContext == 1)) {
+        } else if ((trialState.context === 'rgb(135, 174, 116)')) {
           curContextColor = contextColors[0];
         }  
       } else {
