@@ -437,6 +437,70 @@ function attachTracker() {
 
 let savedRows = 0;
 
+/*
+ * INDEPENDENT TRIAL LOG.
+ *
+ * jsPsych 8.3.0 + psychophysics 5.1.0 were dropping keys between the plugin's
+ * trial_data and the stored row: response_type and key_press came out blank
+ * even though the plugin writes them unconditionally and response_type has a
+ * hard default of "key". Anything added via the trial-level `data` parameter
+ * or in on_finish went the same way, while rt survived.
+ *
+ * Rather than depend on that pipeline for the dependent variables, every test
+ * trial appends a fully-formed row here. This array is the source of truth for
+ * the analysis file; jsPsych's own CSV is still written alongside it as a
+ * secondary record.
+ *
+ * Note on empty cells in the jsPsych CSV: its writer maps `undefined` to an
+ * empty string and `null` to the text "null", and it builds columns from the
+ * union of keys across all rows. So a header with an entirely blank column
+ * means the key exists somewhere but is undefined, not that it is null.
+ */
+const trialRows = [];
+
+// Fixed column order, so the CSV is stable even if a trial errors early.
+const ROW_COLUMNS = [
+  'participant_id', 'session', 'timestamp',
+  'block', 'trialCount', 'trial_index',
+  'rep', 'cond_context', 'context_color', 'cond_theta',
+  'probe', 'probe_stim', 'stim_names', 'study_colors',
+  'target_hue', 'rotation', 'target_theta',
+  'raw_angle', 'adjusted_angle', 'response_hue',
+  'angular_error', 'abs_angular_error',
+  'responded', 'timed_out',
+  'rt', 'move_onset', 'click_rt', 'movement_time',
+  'cursor_angle', 'cursor_radius',
+  'click_x', 'click_y', 'click_theta', 'click_radius',
+  'screen_w', 'screen_h', 'dpr'
+];
+
+/*
+ * Quote every field and flatten newlines. Excel on macOS mishandles newlines
+ * inside quoted fields, which is what shredded the instruction HTML across
+ * column A of your sheet; no value written here can contain one.
+ */
+function toCsv(rows, columns) {
+  const esc = v => (v === null || v === undefined)
+    ? '""'
+    : '"' + String(v).replace(/\r?\n/g, ' ').replace(/"/g, '""') + '"';
+  const lines = [columns.map(esc).join(',')];
+  for (const r of rows) lines.push(columns.map(c => esc(r[c])).join(','));
+  return lines.join('\r\n') + '\r\n';
+}
+
+function downloadText(text, filename, mime) {
+  try {
+    const blob = new Blob([text], { type: mime });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch (e) {
+    console.error(`download of ${filename} failed:`, e);
+  }
+}
+
 async function postRows(rows, tag) {
   if (!SAVE_URL || !rows.length) return { ok: false, skipped: true };
   const body = JSON.stringify({
@@ -461,25 +525,22 @@ async function postRows(rows, tag) {
 
 // Ships only rows not sent yet, so a dropout still leaves everything up to
 // the last completed block on the server.
-async function saveIncremental(jsPsych, tag) {
-  const all = jsPsych.data.get().filter({ trial_part: 'test' }).values();
-  const fresh = all.slice(savedRows);
+async function saveIncremental(tag) {
+  const fresh = trialRows.slice(savedRows);
   if (!fresh.length) return;
   const res = await postRows(fresh, tag);
-  if (res.ok) savedRows = all.length;
+  if (res.ok) savedRows = trialRows.length;
 }
 
+// Two files: the analysis file built from trialRows, and jsPsych's own dump
+// kept as a secondary record in case something needs auditing later.
 function downloadCsv(jsPsych) {
+  const stamp = `${PARTICIPANT_ID}_s${SESSION_ID}_${Date.now()}`;
+  downloadText(toCsv(trialRows, ROW_COLUMNS), `${stamp}_trials.csv`, 'text/csv');
   try {
-    const csv = jsPsych.data.get().csv();
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `${PARTICIPANT_ID}_s${SESSION_ID}_${Date.now()}.csv`;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    downloadText(jsPsych.data.get().csv(), `${stamp}_jspsych_raw.csv`, 'text/csv');
   } catch (e) {
-    console.error('CSV download failed:', e);
+    console.error('raw jsPsych CSV failed:', e);
   }
 }
 
@@ -491,8 +552,12 @@ async function runExperiment() {
   const jsPsych = initJsPsych({
     on_finish: async function () {
       showLoading('Saving your data\u2026');
-      const res = await postRows(jsPsych.data.get().values(), 'final');
+      const res = await postRows(trialRows, 'final');
+      // The analysis CSV is written whether or not the POST succeeded: a
+      // server copy and a local copy are not redundant when one of them is a
+      // server you have not configured yet.
       if (!res.ok && DOWNLOAD_CSV_FALLBACK) downloadCsv(jsPsych);
+      console.log(`session complete: ${trialRows.length} test rows`, trialRows);
       showLoading('Done. Thank you for your participation.');
     }
   });
@@ -598,15 +663,15 @@ async function runExperiment() {
     func: function (done) {
       done();                                  // never block the participant
       try {
-        const rows = jsPsych.data.get().filter({ trial_part: 'test' }).values();
         localStorage.setItem(
           `ipw_${PARTICIPANT_ID}_s${SESSION_ID}`,
-          JSON.stringify({ savedAt: Date.now(), block: k + 1, rows })
+          JSON.stringify({ savedAt: Date.now(), block: k + 1, rows: trialRows })
         );
       } catch (e) {
         console.warn('local backup failed:', e);   // quota / private mode
       }
-      if (SAVE_BLOCKS) saveIncremental(jsPsych, `block${k + 1}`).catch(console.warn);
+      console.log(`block ${k + 1} complete: ${trialRows.length} test rows logged`);
+      if (SAVE_BLOCKS) saveIncremental(`block${k + 1}`).catch(console.warn);
     }
   };
 }
@@ -748,6 +813,20 @@ const study = {
       // Was read in on_finish but never assigned, so probe_stim was undefined.
       trialState.probeName = probeStimName;
 
+      /*
+       * Read the timeline variables here and keep them, instead of relying on
+       * the trial-level `data` parameter, which is where block / trialCount /
+       * trial_part were being lost. evaluateTimelineVariable demonstrably
+       * works in on_start: it is what already drives the context colour and
+       * the stimulus selection.
+       */
+      trialState.block       = jsPsych.evaluateTimelineVariable('block');
+      trialState.trialCount  = jsPsych.evaluateTimelineVariable('trialCount');
+      trialState.rep         = jsPsych.evaluateTimelineVariable('rep');
+      trialState.condContext = jsPsych.evaluateTimelineVariable('context');
+      trialState.condTheta   = jsPsych.evaluateTimelineVariable('condTheta');
+      trialState.probeIndex  = probeStimIndex;
+
       const randomRotation = () =>
           jsPsych.randomization.sampleWithoutReplacement([45, 90, 135, 180, 225, 270, 315], 1)[0];
       wheel.randomRotation = randomRotation();
@@ -836,20 +915,81 @@ const study = {
       data.stim_names    = trialState.stimNames;
       data.study_colors  = trialState.studyColors;
 
-      // Independent cross-check derived from the click coordinates. click_x /
-      // click_y are canvas-relative with origin_center false, so the centre has
-      // to be subtracted before taking the angle. click_theta should match
-      // rawAngle; a persistent discrepancy means the click coordinates are not
-      // in drawing units.
-      if (data.click_x != null && wheel.cx != null) {
-        const x =  (data.click_x - wheel.cx);
-        const y = -(data.click_y - wheel.cy);
+      /*
+       * Independent cross-check from the click coordinates.
+       *
+       * psychophysics 5.1.0 writes
+       *     click_x: response.clickX - centerX
+       * so click_x / click_y are ALREADY centre-relative. Subtracting
+       * wheel.cx / wheel.cy again, as the previous version did, displaced
+       * every click by one canvas centre and made click_theta meaningless.
+       * Use them as they come.
+       */
+      if (data.click_x != null) {
+        const x =  data.click_x;
+        const y = -data.click_y;                 // canvas y grows downward
         data.click_theta  = thetaFromAngle(mod(Math.atan2(y, x) * 180 / Math.PI, 360));
         data.click_radius = Math.hypot(x, y);
       } else {
         data.click_theta  = null;
         data.click_radius = null;
       }
+
+      /*
+       * Append the analysis row. Everything here is read from trialState and
+       * wheel, both of which are ordinary module-level objects, so nothing on
+       * this row can be lost by jsPsych's result handling.
+       */
+      trialRows.push({
+        participant_id: PARTICIPANT_ID,
+        session:        SESSION_ID,
+        timestamp:      new Date().toISOString(),
+
+        block:        trialState.block,
+        trialCount:   trialState.trialCount,
+        trial_index:  data.trial_index,
+
+        rep:           trialState.rep,
+        cond_context:  trialState.condContext,
+        context_color: trialState.context,
+        cond_theta:    trialState.condTheta,
+
+        probe:        trialState.probeIndex,
+        probe_stim:   trialState.probeName,
+        stim_names:   trialState.stimNames,
+        study_colors: trialState.studyColors,
+
+        target_hue:   wheel.targetHue,
+        rotation:     R,
+        target_theta: data.target_theta,
+
+        raw_angle:      data.rawAngle,
+        adjusted_angle: data.adjustedAngle,
+        response_hue:   data.response_hue,
+
+        angular_error:     data.angularError,
+        abs_angular_error: data.absAngularError,
+
+        responded: data.responded,
+        timed_out: data.timed_out,
+
+        rt:            data.rt,              // the plugin's own clock
+        move_onset:    data.move_onset,
+        click_rt:      data.click_rt,
+        movement_time: data.movement_time,
+
+        cursor_angle:  wheel.angle,
+        cursor_radius: wheel.radius,
+
+        click_x:      data.click_x,
+        click_y:      data.click_y,
+        click_theta:  data.click_theta,
+        click_radius: data.click_radius,
+
+        screen_w: window.innerWidth,
+        screen_h: window.innerHeight,
+        dpr:      window.devicePixelRatio || 1
+      });
 
       wheel.theta      = null;
       wheel.clickTheta = null;
