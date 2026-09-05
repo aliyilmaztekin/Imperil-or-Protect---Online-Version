@@ -678,7 +678,7 @@ async function runExperiment() {
     fetch(IMAGE_URL).then(r => r.json())
   ]);
 
-  const startRow = 1;
+  const startRow = 2;
 
   // Unfold the flattened matrix
   const imageMatrix = reshapeAndSample(flatImageMatrix, nCols, nTrials);
