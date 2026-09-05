@@ -859,7 +859,13 @@ const study = {
       curContextColor = contextColors[Number(startContext)];
     } else {
       const cmd = jsPsych.evaluateTimelineVariable('context');
-      curContextColor = Number(cmd) === 1 ? contextColors[0] : contextColors[1];
+      if (Number(cmd) == 1) {
+        if (Number(startContext == 0)) {
+          curContextColor = contextColors[1];
+        } else if (Number(startContext == 1)) {
+          curContextColor = contextColors[0];
+        }  
+      }
     }
 
     trialState.context = curContextColor;
