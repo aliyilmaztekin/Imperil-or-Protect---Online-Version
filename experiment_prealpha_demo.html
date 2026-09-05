@@ -626,9 +626,9 @@ const study = {
     trialState.pos    = jsPsych.evaluateTimelineVariable('positions');
     trialState.colors = jsPsych.evaluateTimelineVariable('colors');
 
-    //trialState.probeName   = probeStimName;
-    //trialState.stimNames   = allItems.join('|');
-    //trialState.studyColors = trialState.colors.join('|');
+  
+    trialState.stimNames   = allItems.join('|');
+    trialState.studyColors = trialState.colors.join('|');
   },
 
   on_finish: function (data) { 
