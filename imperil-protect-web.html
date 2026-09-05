@@ -678,7 +678,36 @@ async function runExperiment() {
     fetch(IMAGE_URL).then(r => r.json())
   ]);
 
-  const startRow = 1;
+  /*
+   * The condition matrix comes out of MATLAB's jsonencode as a bare array of
+   * rows, so the first trial lives at index 0. The previous hard-coded
+   * `startRow = 1` skipped it: trial 1 was served row 2's rep/context/probe,
+   * trial 2 got row 3's, and so on for the whole session. That is the source
+   * of the 2,3,4,5,6,1 cycle in the rep column instead of 1,2,3,4,5,6.
+   *
+   * MATLAB uses 1-based indexing and JavaScript does not, but that difference
+   * lives entirely on the MATLAB side of the export; once the array is here,
+   * row 0 is the first trial. No compensating offset belongs in this file.
+   *
+   * Detect a header rather than assuming one, so this cannot drift again if
+   * the export format changes: a data row is entirely numeric.
+   */
+  const isNumericCell = v =>
+    typeof v === 'number' ? Number.isFinite(v)
+    : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v));
+
+  const looksLikeData = row => Array.isArray(row) && row.length > 0 && row.every(isNumericCell);
+
+  const startRow = looksLikeData(conditionMatrix[0]) ? 0 : 1;
+  if (startRow === 1) {
+    console.warn('conditionMatrix: first row is not fully numeric, treating it as a header:',
+                 conditionMatrix[0]);
+  }
+  if (conditionMatrix.length - startRow < nTrials) {
+    throw new Error(`conditionMatrix has ${conditionMatrix.length - startRow} usable rows, ` +
+                    `need ${nTrials}`);
+  }
+  console.log('conditionMatrix: first trial row =', conditionMatrix[startRow]);
 
   // Unfold the flattened matrix
   const imageMatrix = reshapeAndSample(flatImageMatrix, nCols, nTrials);
