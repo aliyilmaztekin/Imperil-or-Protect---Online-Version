@@ -21,6 +21,12 @@
     <!-- Import the color rotation code -->
     <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/colorWheelTools/labrotate.js"></script>
 
+    <!-- SheetJS, for writing a real .xlsx instead of a CSV that Excel has to
+         guess its way through. Consider vendoring this file into your repo
+         next to the other plug-ins: a CDN outage during data collection would
+         otherwise silently downgrade you to the CSV fallback. -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+
     <style>
       /* The psychophysics plugin sets canvas.style.width/height itself.
          Forcing 100vw/100vh here decouples layout size from drawing size and
@@ -123,7 +129,7 @@ const startContext = Math.round(Math.random());
 // on the CSV download at the end.
 const SAVE_URL   = '';            // e.g. 'https://your-server.example/save'
 const SAVE_BLOCKS = true;         // POST after every block, not just at the end
-const DOWNLOAD_CSV_FALLBACK = true;
+const DOWNLOAD_LOCAL_FALLBACK = true;   // write the .xlsx if the POST fails
 
 if (!SAVE_URL) {
   console.warn('SAVE_URL is empty: nothing is posted to a server. ' +
@@ -475,10 +481,93 @@ const ROW_COLUMNS = [
 ];
 
 /*
- * Quote every field and flatten newlines. Excel on macOS mishandles newlines
- * inside quoted fields, which is what shredded the instruction HTML across
- * column A of your sheet; no value written here can contain one.
+ * Cell typing for the xlsx writer.
+ *
+ * A CSV carries no type information, so Excel guesses from the text and from
+ * your system locale. On a tr-TR Mac the decimal separator is a comma, which
+ * is why the delimiter has to be set by hand and why anything shaped like
+ * 2.1.0 or 3-5 comes back as a date. Writing an xlsx removes the guessing:
+ * numbers are stored as numbers.
  */
+const TEXT_COLUMNS = new Set([
+  'participant_id', 'session', 'timestamp', 'context_color',
+  'probe_stim', 'stim_names', 'study_colors'
+]);
+
+const BOOL_COLUMNS = new Set(['responded', 'timed_out']);
+
+// performance.now() differences carry ~10 meaningless decimals. Round at the
+// point of writing rather than leaving 1431.2999999999997 in the sheet.
+const DECIMALS = {
+  rt: 1, move_onset: 1, click_rt: 1, movement_time: 1,
+  angular_error: 2, abs_angular_error: 2,
+  raw_angle: 2, adjusted_angle: 2, response_hue: 2,
+  target_hue: 2, target_theta: 2,
+  cursor_angle: 2, cursor_radius: 1,
+  click_x: 1, click_y: 1, click_theta: 2, click_radius: 1,
+  dpr: 2
+};
+
+// null becomes a genuinely empty cell, which reads as NA in R and as NaN in
+// pandas. The string "null" would read as text and poison the column's type.
+function cellValue(col, v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (BOOL_COLUMNS.has(col)) return Boolean(v);
+  if (TEXT_COLUMNS.has(col)) return String(v);
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  const d = DECIMALS[col];
+  return d == null ? n : Number(n.toFixed(d));
+}
+
+function buildWorkbook(jsPsych) {
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: the analysis rows, one per test trial.
+  const aoa = [ROW_COLUMNS.slice()];
+  for (const r of trialRows) aoa.push(ROW_COLUMNS.map(c => cellValue(c, r[c])));
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = ROW_COLUMNS.map(c => ({ wch: Math.max(11, c.length + 2) }));
+  XLSX.utils.book_append_sheet(wb, ws, 'trials');
+
+  // Sheet 2: session-level facts that would otherwise be repeated on every
+  // row. The user agent in particular is long and full of commas.
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+    ['field', 'value'],
+    ['participant_id', PARTICIPANT_ID],
+    ['session', SESSION_ID],
+    ['start_context', Number(startContext)],
+    ['n_trials_logged', trialRows.length],
+    ['n_trials_expected', nTrials],
+    ['screen_w', window.innerWidth],
+    ['screen_h', window.innerHeight],
+    ['dpr', window.devicePixelRatio || 1],
+    ['saved_at', new Date().toISOString()],
+    ['user_agent', navigator.userAgent]
+  ]), 'session');
+
+  // Sheet 3: jsPsych's own record, every cell written as text so nothing gets
+  // reinterpreted. Kept for auditing, not for analysis.
+  try {
+    const raw = jsPsych.data.get().values();
+    const cols = [...new Set(raw.flatMap(r => Object.keys(r)))];
+    const rawAoa = [cols];
+    for (const r of raw) {
+      rawAoa.push(cols.map(c => {
+        const v = r[c];
+        if (v === null || v === undefined) return null;
+        return typeof v === 'object' ? JSON.stringify(v) : String(v);
+      }));
+    }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rawAoa), 'jspsych_raw');
+  } catch (e) {
+    console.warn('raw sheet skipped:', e);
+  }
+
+  return wb;
+}
+
+// Quote every field and flatten newlines. Only used if SheetJS is unavailable.
 function toCsv(rows, columns) {
   const esc = v => (v === null || v === undefined)
     ? '""'
@@ -532,15 +621,24 @@ async function saveIncremental(tag) {
   if (res.ok) savedRows = trialRows.length;
 }
 
-// Two files: the analysis file built from trialRows, and jsPsych's own dump
-// kept as a secondary record in case something needs auditing later.
-function downloadCsv(jsPsych) {
+/*
+ * Writes one .xlsx with three sheets. Falls back to the CSV only if SheetJS
+ * failed to load or the write threw, because a participant finishing with no
+ * file at all is the one outcome worth avoiding.
+ */
+function saveDataFile(jsPsych) {
   const stamp = `${PARTICIPANT_ID}_s${SESSION_ID}_${Date.now()}`;
-  downloadText(toCsv(trialRows, ROW_COLUMNS), `${stamp}_trials.csv`, 'text/csv');
+
+  if (typeof XLSX === 'undefined') {
+    console.warn('SheetJS did not load; writing CSV instead.');
+    downloadText(toCsv(trialRows, ROW_COLUMNS), `${stamp}_trials.csv`, 'text/csv');
+    return;
+  }
   try {
-    downloadText(jsPsych.data.get().csv(), `${stamp}_jspsych_raw.csv`, 'text/csv');
+    XLSX.writeFile(buildWorkbook(jsPsych), `${stamp}.xlsx`, { compression: true });
   } catch (e) {
-    console.error('raw jsPsych CSV failed:', e);
+    console.error('xlsx write failed; writing CSV instead:', e);
+    downloadText(toCsv(trialRows, ROW_COLUMNS), `${stamp}_trials.csv`, 'text/csv');
   }
 }
 
@@ -556,7 +654,7 @@ async function runExperiment() {
       // The analysis CSV is written whether or not the POST succeeded: a
       // server copy and a local copy are not redundant when one of them is a
       // server you have not configured yet.
-      if (!res.ok && DOWNLOAD_CSV_FALLBACK) downloadCsv(jsPsych);
+      if (!res.ok && DOWNLOAD_LOCAL_FALLBACK) saveDataFile(jsPsych);
       console.log(`session complete: ${trialRows.length} test rows`, trialRows);
       showLoading('Done. Thank you for your participation.');
     }
