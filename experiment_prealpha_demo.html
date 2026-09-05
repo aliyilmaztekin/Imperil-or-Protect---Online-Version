@@ -492,6 +492,7 @@ async function runExperiment() {
 
     return {
         deadWeight,
+        block: Math.floor(i / BLOCK_SIZE) + 1,
         rep, context, 
         colors: [rep1color, rep2color, novel],
         probe,
@@ -550,15 +551,24 @@ async function runExperiment() {
   }
 
   function blockSave(k) {
-    return {
-      type: jsPsychCallFunction,
-      async: true,
-      func: function (done) {
-        done();                                // never block the participant
-        if (SAVE_BLOCKS) saveIncremental(jsPsych, `block${k + 1}`).catch(console.warn);
+  return {
+    type: jsPsychCallFunction,
+    async: true,
+    func: function (done) {
+      done();                                  // never block the participant
+      try {
+        const rows = jsPsych.data.get().filter({ trial_part: 'test' }).values();
+        localStorage.setItem(
+          `ipw_${PARTICIPANT_ID}_s${SESSION_ID}`,
+          JSON.stringify({ savedAt: Date.now(), block: k + 1, rows })
+        );
+      } catch (e) {
+        console.warn('local backup failed:', e);   // quota / private mode
       }
-    };
-  }
+      if (SAVE_BLOCKS) saveIncremental(jsPsych, `block${k + 1}`).catch(console.warn);
+    }
+  };
+}
 
   const trialState = () => ({
     stims: "null", pos: "null", colors: "null", context: "null" 
@@ -590,6 +600,13 @@ const study = {
   choices: 'NO_KEYS',
   trial_duration: STUDY_MS,
 
+  data: {
+    trial_part: 'study',
+    block:      jsPsych.timelineVariable('block'),
+    trialCount: jsPsych.timelineVariable('trialCount'),
+  },
+
+
   on_start: function (trial) {
     sizeToViewport(trial);
     const trialCount = jsPsych.evaluateTimelineVariable('trialCount');
@@ -608,10 +625,19 @@ const study = {
     trialState.stims  = jsPsych.evaluateTimelineVariable('stimNames').map(getLab);
     trialState.pos    = jsPsych.evaluateTimelineVariable('positions');
     trialState.colors = jsPsych.evaluateTimelineVariable('colors');
+
+    trialState.probeName   = probeStimName;
+    trialState.stimNames   = allItems.join('|');
+    trialState.studyColors = trialState.colors.join('|');
   },
 
   on_finish: function (data) { 
     data.context_color = trialState.context; 
+
+    data.probe_stim   = trialState.probeName;
+      data.stim_names   = trialState.stimNames;
+      data.study_colors = trialState.studyColors;
+      data.move_onset   = wheel.firstMove == null ? null : wheel.firstMove - wheel.t0;
   }
 };
 
@@ -652,6 +678,15 @@ const study = {
     response_type: 'mouse', // Allow a mouse click to end testing
     response_start_time: 0,
     trial_duration: TEST_MS,
+
+    data: {
+      trial_part: 'test',
+      block:        jsPsych.timelineVariable('block'),
+      trialCount:   jsPsych.timelineVariable('trialCount'),
+      rep:          jsPsych.timelineVariable('rep'),
+      cond_context: jsPsych.timelineVariable('context'),
+      probe:        jsPsych.timelineVariable('probe'),
+    },
 
     on_start: function (trial) {
       sizeToViewport(trial);
