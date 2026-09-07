@@ -707,10 +707,9 @@ async function runExperiment() {
     throw new Error(`conditionMatrix has ${conditionMatrix.length - startRow} usable rows, ` +
                     `need ${nTrials}`);
   }
-  console.log('conditionMatrix: first trial row =', conditionMatrix[startRow]);
 
   // Unfold the flattened matrix
-  const imageMatrix = reshapeAndSample(flatImageMatrix, nCols, nTrials);
+  const imageMatrix = reshapeMatrix(flatImageMatrix, nCols, nTrials);
 
   // Extract the contents of the condition matrix
   const timelineVars = conditionMatrix.slice(startRow, startRow+nTrials).map((row, i) => {
