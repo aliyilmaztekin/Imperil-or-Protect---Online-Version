@@ -81,7 +81,7 @@ const nBlocks = nTrials/seriesLength;
 const BLOCK_SIZE = nTrials/nBlocks;
 
 let breaksRemaining = nBlocks-1;   // or whatever drives the decision
-const nCols = 3;
+const nCols = 2;
 const LAB_CACHE  = 12;            // LabStim objects kept resident (~4 MB each)
 
 // Scale the original size of the image
@@ -719,11 +719,11 @@ async function runExperiment() {
     const cols = COND_HAS_THETA_COL ? row.slice(0, 5).concat(row.slice(6)) : row;
     const condTheta = COND_HAS_THETA_COL ? row[5] : null;
 
-    const [rep, context, rep1color, rep2color, novel, probe,
-            pos1x, pos1y, pos2x, pos2y, pos3x, pos3y, stimID1, stimID2, stimID3] = cols;
+    const [rep, context, rep1color, novel, probe,
+            pos1x, pos1y, pos3x, pos3y, stimID1, stimID3] = cols;
 
     // Also get the stimulus names
-    const [rep1, rep2, novelStim] = imageMatrix[i];
+    const [rep1, novelStim] = imageMatrix[i];
 
     return {
         block: Math.floor(i / BLOCK_SIZE) + 1,
@@ -733,12 +733,11 @@ async function runExperiment() {
         probe,
         positions: [
         { x: pos1x, y: pos1y },
-        { x: pos2x, y: pos2y },
-        { x: pos3x, y: pos3y },
+        { x: pos2x, y: pos2y }
         ],
         trialCount: i + 1,
-        stimNames: [rep1, rep2, novelStim],
-        stimIDs: [stimID1, stimID2, stimID3],
+        stimNames: [rep1, novelStim],
+        stimIDs: [stimID1, stimID3],
     };
     });
 
@@ -827,7 +826,7 @@ const study = {
     { obj_type: 'manual', show_start_time: 0, show_end_time: STUDY_STIM_MS,
       drawFunc: function (s, canvas, ctx) {
         const { cx, cy } = drawingBox(canvas, ctx);
-        for (let item = 0; item < 3; item++) {
+        for (let item = 0; item < 2; item++) {
           drawStim(ctx, trialState.stims[item], trialState.colors[item],
                    cx + trialState.pos[item].x,
                    cy + trialState.pos[item].y, imageScale, 0);
