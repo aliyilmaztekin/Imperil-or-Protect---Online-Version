@@ -945,6 +945,7 @@ const study = {
 
       // Was read in on_finish but never assigned, so probe_stim was undefined.
       trialState.probeName = probeStimName;
+      console.log(trialState.probeName);
 
       /*
        * Read the timeline variables here and keep them, instead of relying on
@@ -959,6 +960,7 @@ const study = {
       trialState.condContext = jsPsych.evaluateTimelineVariable('context');
       trialState.condTheta   = jsPsych.evaluateTimelineVariable('condTheta');
       trialState.probeIndex  = probeStimIndex;
+      console.log(trialState.probeIndex);
 
       const randomRotation = () =>
           jsPsych.randomization.sampleWithoutReplacement([45, 90, 135, 180, 225, 270, 315], 1)[0];
