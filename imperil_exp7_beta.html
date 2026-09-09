@@ -289,7 +289,6 @@ function getLab(id) {
 
 // Image rendering function
 const scratchFor = new WeakMap();
-const scratchFor2 = new WeakMap();
 
 /*
  * The cache key must be the hue that was actually rendered. Comparing against
@@ -316,24 +315,72 @@ function drawStim(ctx, stim, theta, cx, cy, scale, randomRotate) {
   ctx.drawImage(s.canvas, cx - w / 2, cy - h / 2, w, h);
 }
 
-function drawStimGrey (ctx, stim, theta, cx, cy, scale){
-  let s = scratchFor2.get(stim);
-  if (!s) {
-    const c = document.createElement('canvas');
-    c.width = stim.width; c.height = stim.height;
-    s = { canvas: c, ctx: c.getContext('2d', { colorSpace: 'srgb' }),
-          img: new ImageData(stim.out, stim.width, stim.height), hue: null };
-    scratchFor2.set(stim, s);
-  }
-  const hue = mod(Number(theta), 360);
-  if (s.hue !== hue) {
-    stim.render(hue);
-    s.ctx.putImageData(s.img, 0, 0);
-    s.hue = hue;
-  }
-  const w = stim.width * scale, h = stim.height * scale;
-  ctx.drawImage(s.canvas, cx - w / 2, cy - h / 2, w, h);
+/*
+ * ACHROMATIC (pre-response) VERSION OF A STIMULUS.
+ *
+ * The previous implementation called stim.render(0). A rotation of zero
+ * degrees leaves the a*b* plane untouched, so it returned the source image at
+ * full chroma. The pre-response frame was therefore a fully coloured object,
+ * which is exactly what the grey frame exists to prevent.
+ *
+ * Zeroing a* and b* while keeping L* gives a true neutral that is
+ * lightness-matched, pixel for pixel, to every rotated version of the same
+ * image. The switch to colour on the first cursor movement then changes hue
+ * and chroma only, with no brightness step to cue the participant.
+ *
+ * The grey image never varies, so it is built once per LabStim and cached for
+ * the lifetime of that object. It must NOT be written into stim.out: that
+ * buffer is shared with the colour path's ImageData and guarded by
+ * stim.lastTheta, so overwriting it would corrupt the next coloured frame.
+ */
+const greyFor = new WeakMap();
 
+function greyCanvasFor(stim) {
+  let g = greyFor.get(stim);
+  if (g) return g;
+
+  if (typeof labToRgb255 !== 'function') {
+    throw new Error('labToRgb255 is undefined: labrotate.js failed to load, ' +
+                    'or a cached older copy is being served.');
+  }
+
+  const c = document.createElement('canvas');
+  c.width = stim.width; c.height = stim.height;
+  const cctx = c.getContext('2d', { colorSpace: 'srgb' });
+
+  const buf   = new Uint8ClampedArray(stim.n * 4);
+  const idx   = stim.idx, L = stim.L, alpha = stim.alpha;
+
+  /*
+   * With a* = b* = 0 the output depends on L* alone, so quantise L* and
+   * memoise. An object bitmap has tens of thousands of visible pixels but
+   * only a few hundred distinct lightness levels at 0.05 L* resolution, which
+   * is far finer than the 8-bit output can resolve.
+   */
+  const lut = new Map();
+  for (let k = 0; k < idx.length; k++) {
+    const p   = idx[k];
+    const key = Math.round(L[p] * 20);
+    let rgb = lut.get(key);
+    if (!rgb) { rgb = labToRgb255(key / 20, 0, 0); lut.set(key, rgb); }
+    const o = p << 2;
+    buf[o] = rgb[0]; buf[o + 1] = rgb[1]; buf[o + 2] = rgb[2];
+  }
+  // Alpha copied for every pixel, including the fully transparent ones that
+  // are skipped above, so the cut-out matches the coloured path exactly.
+  for (let p = 0; p < stim.n; p++) buf[(p << 2) + 3] = alpha[p];
+
+  cctx.putImageData(new ImageData(buf, stim.width, stim.height), 0, 0);
+
+  g = { canvas: c };
+  greyFor.set(stim, g);
+  return g;
+}
+
+function drawStimGrey(ctx, stim, cx, cy, scale) {
+  const g = greyCanvasFor(stim);
+  const w = stim.width * scale, h = stim.height * scale;
+  ctx.drawImage(g.canvas, cx - w / 2, cy - h / 2, w, h);
 }
 
 
@@ -910,12 +957,16 @@ const study = {
           const { cx, cy } = drawingBox(canvas, ctx);
           if (!wheel.stim) return;
 
-          // Before the cursor has moved, theta is null: draw the ring with no
-          // marker and the un-rotated stimulus. Exactly one of the two
-          // branches runs, so the pre-response frame is not overpainted.
+          /*
+           * Before the cursor has moved, theta is null: draw the ring with no
+           * marker and the stimulus with its chroma stripped out. The first
+           * pointermove sets theta and the else branch takes over, so the hue
+           * then tracks the cursor for the rest of the trial. Exactly one of
+           * the two branches runs, so the grey frame is never overpainted.
+           */
           if (wheel.theta == null) {
             drawWheel(ctx, cx, cy, null);
-            drawStimGrey(ctx, wheel.stim, 0, cx, cy, imageScale);
+            drawStimGrey(ctx, wheel.stim, cx, cy, imageScale);
           } else {
             drawWheel(ctx, cx, cy, wheel.theta);
             drawStim(ctx, wheel.stim, wheel.theta, cx, cy, imageScale, wheel.randomRotation);
