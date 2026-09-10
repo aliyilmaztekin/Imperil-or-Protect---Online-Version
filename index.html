@@ -84,6 +84,25 @@ let breaksRemaining = nBlocks-1;   // or whatever drives the decision
 const nCols = 2;
 const LAB_CACHE  = 12;            // LabStim objects kept resident (~4 MB each)
 
+/*
+ * TRAINING.
+ *
+ * The first N_TRAINING trials of the condition matrix are practice trials.
+ * After each click the absolute angular error is printed above the colour
+ * wheel and a tick marks the correct position on the ring, for FEEDBACK_MS.
+ * When training is over, an instructions screen introduces the main
+ * experiment. Set N_TRAINING to 0 to run without training.
+ */
+const N_TRAINING  = 12;
+const FEEDBACK_MS = 3000;
+
+const FEEDBACK_TARGET_COLOR = 'rgb(255,255,255)';  // correct-answer tick
+const FEEDBACK_TARGET_LEN   = 22;    // half-length of that tick, in canvas px
+const FEEDBACK_TARGET_W     = 4;     // its line width
+const FEEDBACK_TEXT_COLOR   = 'rgb(0,0,0)';
+const FEEDBACK_FONT         = 'bold 28px sans-serif';
+const FEEDBACK_TEXT_GAP     = 40;    // gap between the ring and the error text
+
 // Scale the original size of the image
 const imageScale = 0.32;
 
@@ -384,6 +403,27 @@ function drawStimGrey(ctx, stim, cx, cy, scale) {
 }
 
 
+/*
+ * A short line across the ring, perpendicular to it, at wheel position
+ * `theta`. Used both for the live cursor marker and, on training trials, for
+ * the correct-answer marker on the feedback screen. Because it is placed with
+ * angleFromTheta, it sits exactly where the cursor would have had to be to
+ * produce that theta.
+ */
+function drawTick(ctx, cx, cy, theta, color, halfLen, width) {
+  const rad = angleFromTheta(Number(theta)) * Math.PI / 180;
+  const ux = Math.cos(rad), uy = -Math.sin(rad);       // y down on canvas
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = width;
+  ctx.lineCap     = 'round';
+  ctx.beginPath();
+  ctx.moveTo(cx + ux * (CIRCLE_R - halfLen), cy + uy * (CIRCLE_R - halfLen));
+  ctx.lineTo(cx + ux * (CIRCLE_R + halfLen), cy + uy * (CIRCLE_R + halfLen));
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawWheel(ctx, cx, cy, currentTheta) {
   ctx.save();
 
@@ -393,18 +433,11 @@ function drawWheel(ctx, cx, cy, currentTheta) {
   ctx.arc(cx, cy, CIRCLE_R, 0, 2 * Math.PI);
   ctx.stroke();
 
-  if (WHEEL_MARKER && currentTheta != null && Number.isFinite(Number(currentTheta))) {
-    const rad = angleFromTheta(Number(currentTheta)) * Math.PI / 180;
-    const ux = Math.cos(rad), uy = -Math.sin(rad);       // y down on canvas
-    ctx.strokeStyle = MARKER_COLOR;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(cx + ux * (CIRCLE_R - MARKER_LEN), cy + uy * (CIRCLE_R - MARKER_LEN));
-    ctx.lineTo(cx + ux * (CIRCLE_R + MARKER_LEN), cy + uy * (CIRCLE_R + MARKER_LEN));
-    ctx.stroke();
-  }
-
   ctx.restore();
+
+  if (WHEEL_MARKER && currentTheta != null && Number.isFinite(Number(currentTheta))) {
+    drawTick(ctx, cx, cy, currentTheta, MARKER_COLOR, MARKER_LEN, CIRCLE_LINE_W);
+  }
 }
 
 
@@ -423,6 +456,16 @@ const wheel = {
   // firstMove and clickTime are absolute performance.now() stamps; the
   // differences are what get logged.
   t0: null, firstMove: null, clickTime: null
+};
+
+/*
+ * Snapshot of the most recent test response, written at the end of
+ * test.on_finish (before the wheel state is reset) and read by the training
+ * feedback screen that follows it.
+ */
+const lastFeedback = {
+  stim: null, responded: false,
+  respTheta: null, targetTheta: null, rotation: 0, absError: null
 };
 
 function attachTracker() {
@@ -514,7 +557,7 @@ const trialRows = [];
 // Fixed column order, so the CSV is stable even if a trial errors early.
 const ROW_COLUMNS = [
   'participant_id', 'session', 'timestamp',
-  'block', 'trialCount', 'trial_index',
+  'block', 'trialCount', 'training', 'trial_index',
   'rep', 'cond_context', 'context_color', 'cond_theta',
   'probe', 'probe_stim', 'stim_names', 'study_colors',
   'target_hue', 'rotation', 'target_theta',
@@ -541,7 +584,7 @@ const TEXT_COLUMNS = new Set([
   'probe_stim', 'stim_names', 'study_colors'
 ]);
 
-const BOOL_COLUMNS = new Set(['responded', 'timed_out']);
+const BOOL_COLUMNS = new Set(['training', 'responded', 'timed_out']);
 
 // performance.now() differences carry ~10 meaningless decimals. Round at the
 // point of writing rather than leaving 1431.2999999999997 in the sheet.
@@ -586,6 +629,7 @@ function buildWorkbook(jsPsych) {
     ['start_context', Number(startContext)],
     ['n_trials_logged', trialRows.length],
     ['n_trials_expected', nTrials],
+    ['n_training', Math.min(N_TRAINING, nTrials)],
     ['screen_w', window.innerWidth],
     ['screen_h', window.innerHeight],
     ['dpr', window.devicePixelRatio || 1],
@@ -783,6 +827,7 @@ async function runExperiment() {
         { x: pos3x, y: pos3y }
         ],
         trialCount: i + 1,
+        isTraining: i < N_TRAINING,     // the first N_TRAINING trials are practice
         stimNames: [rep1, novelStim],
         stimIDs: [stimID1, stimID3],
     };
@@ -982,6 +1027,7 @@ const study = {
       trial_part: 'test',
       block:        jsPsych.timelineVariable('block'),
       trialCount:   jsPsych.timelineVariable('trialCount'),
+      training:     jsPsych.timelineVariable('isTraining'),
       rep:          jsPsych.timelineVariable('rep'),
       cond_context: jsPsych.timelineVariable('context'),
       probe:        jsPsych.timelineVariable('probe'),
@@ -1007,6 +1053,7 @@ const study = {
        */
       trialState.block       = jsPsych.evaluateTimelineVariable('block');
       trialState.trialCount  = jsPsych.evaluateTimelineVariable('trialCount');
+      trialState.isTraining  = jsPsych.evaluateTimelineVariable('isTraining');
       trialState.rep         = jsPsych.evaluateTimelineVariable('rep');
       trialState.condContext = jsPsych.evaluateTimelineVariable('context');
       trialState.condTheta   = jsPsych.evaluateTimelineVariable('condTheta');
@@ -1132,6 +1179,7 @@ const study = {
 
         block:        trialState.block,
         trialCount:   trialState.trialCount,
+        training:     trialState.isTraining,
         trial_index:  data.trial_index,
 
         rep:           trialState.rep,
@@ -1176,8 +1224,87 @@ const study = {
         dpr:      window.devicePixelRatio || 1
       });
 
+      // Hand the response to the feedback screen (training trials only use
+      // it, but it is cheap to record on every trial).
+      lastFeedback.stim        = wheel.stim;
+      lastFeedback.responded   = data.responded;
+      lastFeedback.respTheta   = respTheta;
+      lastFeedback.targetTheta = data.target_theta;
+      lastFeedback.rotation    = R;
+      lastFeedback.absError    = data.absAngularError;
+
       wheel.theta      = null;
       wheel.clickTheta = null;
+    }
+  };
+
+  /*
+   * TRAINING FEEDBACK.
+   *
+   * Runs after the test screen on training trials only (see the timeline
+   * below). The probe stays frozen at the colour the participant clicked,
+   * their own marker stays on the ring, a longer white tick marks the correct
+   * position, and the absolute error is printed above the ring. The distance
+   * between the two ticks on the ring is exactly the error in degrees, since
+   * hue and wheel position differ only by the constant per-trial rotation.
+   */
+  const feedback = {
+    type: jsPsychPsychophysics,
+    canvas_width: window.innerWidth,
+    canvas_height: window.innerHeight,
+    background_color: greyBackground,
+    origin_center: false,
+
+    stimuli: [
+      // Background — fill_color gets overwritten in on_start
+      { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+        fill_color: greyBackground, show_start_time: 0 },
+      {
+        obj_type: 'manual',
+        show_start_time: 0,
+        drawFunc: function (s, canvas, ctx) {
+          const { cx, cy } = drawingBox(canvas, ctx);
+          const fb = lastFeedback;
+          if (!fb.stim) return;
+
+          // Probe at the colour that was on screen at the click, or grey if
+          // the trial timed out without a click.
+          if (fb.responded) {
+            drawStim(ctx, fb.stim, fb.respTheta, cx, cy, imageScale, fb.rotation);
+          } else {
+            drawStimGrey(ctx, fb.stim, cx, cy, imageScale);
+          }
+
+          // Ring with the participant's own marker ...
+          drawWheel(ctx, cx, cy, fb.responded ? fb.respTheta : null);
+
+          // ... and the correct position, drawn on top.
+          if (Number.isFinite(fb.targetTheta)) {
+            drawTick(ctx, cx, cy, fb.targetTheta,
+                     FEEDBACK_TARGET_COLOR, FEEDBACK_TARGET_LEN, FEEDBACK_TARGET_W);
+          }
+
+          const msg = (fb.responded && Number.isFinite(fb.absError))
+            ? `Error: ${Math.round(fb.absError)}\u00B0`
+            : 'No response \u2013 too slow';
+
+          ctx.save();
+          ctx.fillStyle    = FEEDBACK_TEXT_COLOR;
+          ctx.font         = FEEDBACK_FONT;
+          ctx.textAlign    = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText(msg, cx, cy - CIRCLE_R - FEEDBACK_TEXT_GAP);
+          ctx.restore();
+        }
+      }
+    ],
+    choices: 'NO_KEYS',
+    trial_duration: FEEDBACK_MS,
+    data: { trial_part: 'feedback' },
+
+    on_start: function (trial) {
+      sizeToViewport(trial);
+      trial.stimuli[0].fill_color = trialState.context;   // keep the trial's context
     }
   };
 
@@ -1198,6 +1325,20 @@ const iti = {
     sizeToViewport(trial);
   }
 };
+
+  // Shown once, right after the last training trial.
+  const mainInstructions = {
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
+      <h2>Training complete</h2>
+      <p>Now it's time for the actual experiment. From now on you will no
+         longer see your error after each response.</p>
+      <p><b>Good luck!</b></p>
+      <p>Press any key to begin.</p></div>`,
+    choices: 'ALL_KEYS',
+    data: { trial_part: 'instructions_main' },
+    on_finish: () => hideLoading()
+  };
 
   /* ---- timeline ---- */
 
@@ -1284,12 +1425,36 @@ function makeBreakTrial(prevBlock) {
   };
 }
 
+/*
+ * Each block is split into its training part and its main part. Training
+ * trials get the feedback screen; main trials do not. The instructions screen
+ * goes in front of the first main trial, wherever it falls: at a block
+ * boundary or in the middle of a block.
+ *
+ * If training ends exactly on a block boundary, the regular break at that
+ * boundary is replaced by the instructions screen (which is self-paced), so
+ * participants do not get two pauses in a row.
+ */
 blocks.forEach((vars, k) => {
+  const trainVars = vars.filter(v => v.isTraining);
+  const mainVars  = vars.filter(v => !v.isTraining);
+  const startsMain = N_TRAINING > 0 && mainVars.length > 0 &&
+                     mainVars[0].trialCount === N_TRAINING + 1;
+
   timeline.push(blockPrep(k));
-  if (k > 0) {
+
+  if (k > 0 && !(startsMain && trainVars.length === 0)) {
     timeline.push(makeBreakTrial(blocks[k - 1][0].block));
   }
-  timeline.push({ timeline: [study, test, iti], timeline_variables: vars });
+
+  if (trainVars.length) {
+    timeline.push({ timeline: [study, test, feedback, iti], timeline_variables: trainVars });
+  }
+  if (mainVars.length) {
+    if (startsMain) timeline.push(mainInstructions);
+    timeline.push({ timeline: [study, test, iti], timeline_variables: mainVars });
+  }
+
   timeline.push(blockSave(k));
 });
 
