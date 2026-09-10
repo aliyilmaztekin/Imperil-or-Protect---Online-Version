@@ -1011,7 +1011,6 @@ const study = {
       trialState.condContext = jsPsych.evaluateTimelineVariable('context');
       trialState.condTheta   = jsPsych.evaluateTimelineVariable('condTheta');
       trialState.probeIndex  = probeStimIndex;
-      console.log(trialState.probeIndex);
 
       const randomRotation = () =>
           jsPsych.randomization.sampleWithoutReplacement([45, 90, 135, 180, 225, 270, 315], 1)[0];
@@ -1217,19 +1216,19 @@ const iti = {
   timeline.push({
     type: jsPsychHtmlKeyboardResponse,
     stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
-      <h2>Instructions</h2>
-      <p><b>WARNING:</b>This is a demo of the experiment</p>
+      <h2>Welcome to the experiment!</h2>
       <p>On each trial you will briefly see three objects. Try to remember the
          colour of each one.</p>
       <p>Then one object will reappear in the centre of a colour ring. Move the
          mouse around the ring to change its colour, and <b>click</b> when it
          matches the colour you saw.</p>
+      <p><b>You are now about to start a brief training part</b></p>
       <p>Press any key to start.</p></div>`,
     on_finish: () => hideLoading()
   });
 
 
-const BREAK_SECONDS = 120;   // 2 minutes
+const BREAK_SECONDS = 60;   // 2 minutes
 let breakTimerId = null;
 
 function startCountdown(seconds, display) {
@@ -1246,44 +1245,58 @@ function startCountdown(seconds, display) {
   return setInterval(render, 250);           // sub-second ticks so it never looks stalled
 }
 
-const breakTrial = {
-  type: jsPsychHtmlKeyboardResponse,
-  stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
-    <h2>Break</h2>
-    <p>Please take a break.</p>
-    <p>Time remaining: <span id="break-timer" style="font-variant-numeric:tabular-nums">--:--</span></p>
-    <p>When ready to continue, press any key.</p></div>`,
-  choices: 'ALL_KEYS',
-  trial_duration: BREAK_SECONDS * 1000,
-  on_load: () => {
-    document.body.style.backgroundColor = 'rgb(128,128,128)';
-    breakTimerId = startCountdown(BREAK_SECONDS, document.querySelector('#break-timer'));
-  },
-  on_finish: () => {
-    document.body.style.backgroundColor = '';
-    clearInterval(breakTimerId);
-    breakTimerId = null;
-    hideLoading();
-  }
-};
+function averageErrorCalculate(blockNum) {
+  const errorVals = jsPsych.data.get()
+    .filter({ block: blockNum })
+    .select("absAngularError").values;
 
-  // Schedule block-wide events:
-  // 1) Prepare the stimuli.
-  // 2) Play out the actual trials.
-  // 3) Save this block's data.
-  blocks.forEach((vars, k) => {
-    timeline.push(blockPrep(k));
-    if (k > 0) {
-      timeline.push(breakTrial);
-    };
-    timeline.push({ timeline: [study, test, iti], timeline_variables: vars });
-    timeline.push(blockSave(k));
-  });
+  // Don't include missed trials (null/undefined/NaN) in the average
+  const nums = errorVals.filter(Number.isFinite);
+  if (nums.length === 0) return NaN;
+  return nums.reduce((sum, n) => sum + n, 0) / nums.length;
+}
+
+function makeBreakTrial(prevBlock) {
+  return {
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: () => {
+      const avg = averageErrorCalculate(prevBlock);
+      const avgText = Number.isFinite(avg) ? `${avg.toFixed(1)}°` : 'n/a';
+
+      return `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
+        <h2>End of block. Please take a break</h2>
+        <p>Average error in this block: ${avgText}</p>
+        <p>Next block begins in: <span id="break-timer" style="font-variant-numeric:tabular-nums">--:--</span></p>
+        <p>If you are ready now, press any key to skip the remaining break.</p></div>`;
+    },
+    choices: 'ALL_KEYS',
+    trial_duration: BREAK_SECONDS * 1000,
+    on_load: () => {
+      document.body.style.backgroundColor = 'rgb(128,128,128)';
+      breakTimerId = startCountdown(BREAK_SECONDS, document.querySelector('#break-timer'));
+    },
+    on_finish: () => {
+      document.body.style.backgroundColor = '';
+      clearInterval(breakTimerId);
+      breakTimerId = null;
+      hideLoading();
+    }
+  };
+}
+
+blocks.forEach((vars, k) => {
+  timeline.push(blockPrep(k));
+  if (k > 0) {
+    timeline.push(makeBreakTrial(blocks[k - 1][0].block));
+  }
+  timeline.push({ timeline: [study, test, iti], timeline_variables: vars });
+  timeline.push(blockSave(k));
+});
 
   timeline.push({
     type: jsPsychHtmlKeyboardResponse,
     stimulus: `<div style="font-family:sans-serif;text-align:center">
-      <h2>Finished</h2><p>Press any key to save your data.</p></div>`,
+      <h2>End of experiment</h2><p>Thank you for your participation. Press any key to save your data.</p></div>`,
     choices: 'ALL_KEYS'
   });
 
