@@ -146,15 +146,8 @@ const startContext = Math.round(Math.random());
 
 // Data saving. Leave SAVE_URL empty to skip the server round trip and rely
 // on the CSV download at the end.
-const SAVE_URL   = '';            // e.g. 'https://your-server.example/save'
 const SAVE_BLOCKS = true;         // POST after every block, not just at the end
 const DOWNLOAD_LOCAL_FALLBACK = true;   // write the .xlsx if the POST fails
-
-if (!SAVE_URL) {
-  console.warn('SAVE_URL is empty: nothing is posted to a server. ' +
-               'Mid-experiment data survives only in localStorage, and the ' +
-               'full dataset only via the CSV download at the end.');
-}
 
 const params = new URLSearchParams(location.search);
 const PARTICIPANT_ID = params.get('PROLIFIC_PID') || params.get('id') || `anon-${Date.now()}`;
@@ -681,17 +674,23 @@ function downloadText(text, filename, mime) {
   }
 }
 
+const DATAPIPE_ID = 'uZQGcGEKiUdI';
+const PROLIFIC_CC = 'YOUR_COMPLETION_CODE';      // from your Prolific study setup
+const STUDY_ID    = params.get('STUDY_ID') || '';
+
 async function postRows(rows, tag) {
-  if (!SAVE_URL || !rows.length) return { ok: false, skipped: true };
+  if (!DATAPIPE_ID || !rows.length) return { ok: false, skipped: true };
   const body = JSON.stringify({
-    participant_id: PARTICIPANT_ID, session: SESSION_ID, tag,
-    sent_at: new Date().toISOString(), rows
+    experimentID: DATAPIPE_ID,
+    filename: `${PARTICIPANT_ID}_${SESSION_ID}_${tag}.csv`,
+    data: toCsv(rows, ROW_COLUMNS)
   });
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch(SAVE_URL, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body, keepalive: body.length < 60000
+      const res = await fetch('https://pipe.jspsych.org/api/data/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: '*/*' },
+        body
       });
       if (res.ok) return { ok: true };
       console.warn(`save "${tag}" HTTP ${res.status} (attempt ${attempt + 1})`);
@@ -702,7 +701,6 @@ async function postRows(rows, tag) {
   }
   return { ok: false };
 }
-
 // Ships only rows not sent yet, so a dropout still leaves everything up to
 // the last completed block on the server.
 async function saveIncremental(tag) {
@@ -740,15 +738,20 @@ async function runExperiment() {
   // Save data at the end of the experiment
   const jsPsych = initJsPsych({
     on_finish: async function () {
-      showLoading('Saving your data\u2026');
-      const res = await postRows(trialRows, 'final');
-      // The analysis CSV is written whether or not the POST succeeded: a
-      // server copy and a local copy are not redundant when one of them is a
-      // server you have not configured yet.
-      if (!res.ok && DOWNLOAD_LOCAL_FALLBACK) saveDataFile(jsPsych);
-      console.log(`session complete: ${trialRows.length} test rows`, trialRows);
-      showLoading('Data successfully saved. You can exit fullscreen.');
+    showLoading('Saving your data\u2026');
+    const res = await postRows(trialRows, 'final');
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    if (res.ok) {
+      showLoading('Data saved. Returning you to Prolific\u2026');
+      setTimeout(() => {
+        location.href = `https://app.prolific.com/submissions/complete?cc=${PROLIFIC_CC}`;
+      }, 1500);
+    } else {
+      if (DOWNLOAD_LOCAL_FALLBACK) saveDataFile(jsPsych);
+      showLoading('We could not upload your data. A file has been downloaded; ' +
+                  'please send it to us via Prolific messages. Code: SAVEFAIL');
     }
+  }
   });
 
   // Save data at the beginning of each trial
@@ -1335,7 +1338,7 @@ const study = {
       };
     }
   };
-  
+
   // Inter-Trial Interval
 const iti = {
   type: jsPsychPsychophysics,
