@@ -14,6 +14,7 @@
     <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych/dist/plugin-html-keyboard-response.js"></script>
     <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych/dist/plugin-call-function.js"></script>
     <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych/dist/plugin-fullscreen.js"></script>
+    <script src="https://unpkg.com/@jspsych-contrib/plugin-pipe"></script>
 
     <!-- The jsPsychophysics script-->
     <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych-psychophysics-v.5.1.0/jspsych-psychophysics.js"></script>
@@ -55,9 +56,25 @@
 const SRC_ROOT = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/colorWheelTools/TestObjectsTransparent';
 const SRC_EXT  = '.png';
 
-// The condition matrix determines the events. ImageMatrix determines the image names.
-const CONDITION_URL = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFilesBeta/conditionMatrixBetaTest.json';
-const IMAGE_URL     = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFilesBeta/imageMatrixBetaTest.json';
+// Condition files. DataPipe returns 0..14; files are numbered 01..15.
+const N_CONDITIONS  = 15;
+const COND_BASE_URL = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFiles/';
+
+// Set to false if all 15 conditions share a single image matrix.
+const IMAGE_PER_CONDITION = true;
+const FIXED_IMAGE_URL     = COND_BASE_URL + 'imageMatrix.json';
+
+function conditionUrls(index) {
+  const num = String(index + 1).padStart(2, '0');       // 0 -> "01", 14 -> "15"
+  return {
+    cond:  `${COND_BASE_URL}conditionMatrix_${num}.json`,
+    image: IMAGE_PER_CONDITION ? `${COND_BASE_URL}imageMatrix_${num}.json` : FIXED_IMAGE_URL
+  };
+}
+
+// Filled in once at startup, read by the data-saving code.
+let COND_NUMBER = null;   // 1..15, matches the file name
+let COND_SOURCE = null;   // 'datapipe' | 'url' | 'cached' | 'random'
 
 /*
  * CHECK THIS BEFORE COLLECTING DATA.
@@ -162,6 +179,49 @@ const STUDY_ID       = params.get('STUDY_ID') || '';
 const DATAPIPE_ID      = 'uZQGcGEKiUdI';
 const PROLIFIC_CC      = 'CP3YOCI3';    // normal completion code
 const PROLIFIC_CC_FAIL = 'SAVEFAIL';    // replace with the code of your second completion path
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms))
+  ]);
+}
+
+async function assignCondition() {
+  const isValid = v => Number.isInteger(v) && v >= 0 && v < N_CONDITIONS;
+
+  // 1. Manual override for testing: ?cond=5 runs conditionMatrix_05 without
+  //    touching the DataPipe counter.
+  const forced = params.get('cond');
+  if (forced !== null && isValid(Number(forced) - 1)) {
+    return { index: Number(forced) - 1, source: 'url' };
+  }
+
+  // 2. A page reload should not use up a new slot or switch the participant
+  //    to a different matrix halfway through.
+  const cacheKey = `ipw_cond_${PARTICIPANT_ID}_s${SESSION_ID}`;
+  try {
+    const stored = JSON.parse(localStorage.getItem(cacheKey));
+    if (stored && isValid(stored.index)) return { index: stored.index, source: 'cached' };
+  } catch (e) { /* private mode or corrupt entry: just ask DataPipe */ }
+
+  // 3. Ask DataPipe for the next condition in the cycle.
+  let result;
+  try {
+    if (typeof jsPsychPipe === 'undefined') throw new Error('plugin-pipe did not load');
+    const c = await withTimeout(jsPsychPipe.getCondition(DATAPIPE_ID), 10000);
+    const index = (c === null || c === undefined || c === '') ? NaN : Number(c);
+    if (!isValid(index)) throw new Error(`DataPipe returned ${JSON.stringify(c)}`);
+    result = { index, source: 'datapipe' };
+  } catch (err) {
+    // Never let a counter problem stop the study.
+    console.warn('Condition assignment failed, assigning randomly:', err);
+    result = { index: Math.floor(Math.random() * N_CONDITIONS), source: 'random' };
+  }
+
+  try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch (e) {}
+  return result;
+}
 
 // Conversion functions
 
@@ -559,7 +619,7 @@ const trialRows = [];
 
 // Fixed column order, so the file is stable even if a trial errors early.
 const ROW_COLUMNS = [
-  'participant_id', 'session', 'timestamp',
+  'participant_id', 'session', 'cond_number','timestamp',
   'block', 'trialCount', 'training', 'trial_index',
   'rep', 'cond_context', 'context_color', 'cond_theta',
   'probe', 'probe_stim', 'stim_names', 'study_colors',
@@ -635,6 +695,8 @@ function buildWorkbook(rows, jsPsych = null) {
     ['participant_id', PARTICIPANT_ID],
     ['session', SESSION_ID],
     ['study_id', STUDY_ID],
+    ['cond_number', COND_NUMBER],
+    ['cond_source', COND_SOURCE],
     ['start_context', Number(startContext)],
     ['n_trials_logged', rows.length],
     ['n_trials_expected', nTrials],
@@ -805,11 +867,25 @@ async function runExperiment() {
     ua: navigator.userAgent
   });
 
-  // Fetch conditionMatrix and imageMatrix & await until unpacked.
   showLoading('Loading condition files\u2026');
+  const assigned = await assignCondition();
+  COND_NUMBER = assigned.index + 1;
+  COND_SOURCE = assigned.source;
+  jsPsych.data.addProperties({ cond_number: COND_NUMBER, cond_source: COND_SOURCE });
+  console.log(`Condition ${COND_NUMBER} (${COND_SOURCE})`);
+
+  // Check r.ok: a missing file on GitHub Pages returns an HTML 404 page, and
+  // r.json() would otherwise fail with a confusing parse error.
+  const fetchJson = async url => {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`Could not load ${url} (HTTP ${r.status})`);
+    return r.json();
+  };
+
+  const urls = conditionUrls(assigned.index);
   const [conditionMatrix, flatImageMatrix] = await Promise.all([
-    fetch(CONDITION_URL).then(r => r.json()),
-    fetch(IMAGE_URL).then(r => r.json())
+    fetchJson(urls.cond),
+    fetchJson(urls.image)
   ]);
 
   /*
@@ -1218,6 +1294,7 @@ const study = {
       trialRows.push({
         participant_id: PARTICIPANT_ID,
         session:        SESSION_ID,
+        cond_number:    COND_NUMBER,
         timestamp:      new Date().toISOString(),
 
         block:        trialState.block,
