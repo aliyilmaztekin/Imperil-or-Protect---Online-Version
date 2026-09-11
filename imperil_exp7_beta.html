@@ -1340,7 +1340,6 @@ const iti = {
     on_finish: () => hideLoading()
   };
 
-  /* ---- timeline ---- */
 
   const timeline = [];
 
@@ -1387,6 +1386,7 @@ function startCountdown(seconds, display) {
 }
 
 function averageErrorCalculate(blockNum) {
+
   const errorVals = jsPsych.data.get()
     .filter({ block: blockNum })
     .select("absAngularError").values;
@@ -1395,6 +1395,8 @@ function averageErrorCalculate(blockNum) {
   const nums = errorVals.filter(Number.isFinite);
   if (nums.length === 0) return NaN;
   return nums.reduce((sum, n) => sum + n, 0) / nums.length;
+
+  // Fetch which block this is to show in the break screen how many are left
 }
 
 function makeBreakTrial(prevBlock) {
@@ -1403,10 +1405,12 @@ function makeBreakTrial(prevBlock) {
     stimulus: () => {
       const avg = averageErrorCalculate(prevBlock);
       const avgText = Number.isFinite(avg) ? `${avg.toFixed(1)}°` : 'n/a';
+      const blocksLeft = nBlocks - prevBlock;
 
       return `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
         <h2>End of block. Please take a break</h2>
         <p>Average error in this block: ${avgText}</p>
+        <p>Blocks left to go: ${blocksLeft}</p>
         <p>Next block begins in: <span id="break-timer" style="font-variant-numeric:tabular-nums">--:--</span></p>
         <p>If you are ready now, press any key to skip the remaining break.</p></div>`;
     },
