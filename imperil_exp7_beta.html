@@ -1248,6 +1248,9 @@ const study = {
    * between the two ticks on the ring is exactly the error in degrees, since
    * hue and wheel position differ only by the constant per-trial rotation.
    */
+  
+  let shownFeedback = {};
+
   const feedback = {
     type: jsPsychPsychophysics,
     canvas_width: window.innerWidth,
@@ -1264,7 +1267,7 @@ const study = {
         show_start_time: 0,
         drawFunc: function (s, canvas, ctx) {
           const { cx, cy } = drawingBox(canvas, ctx);
-          const fb = lastFeedback;
+          const fb = shownFeedback;            // verified copy, not lastFeedback
           if (!fb.stim) return;
 
           // Probe at the colour that was on screen at the click, or grey if
@@ -1286,7 +1289,7 @@ const study = {
 
           const msg = (fb.responded && Number.isFinite(fb.absError))
             ? `Error: ${Math.round(fb.absError)}\u00B0`
-            : 'No response \u2013 too slow';
+            : 'Please reply quicker!';
 
           ctx.save();
           ctx.fillStyle    = FEEDBACK_TEXT_COLOR;
@@ -1305,6 +1308,26 @@ const study = {
     on_start: function (trial) {
       sizeToViewport(trial);
       trial.stimuli[0].fill_color = trialState.context;   // keep the trial's context
+
+      // Check what jsPsych actually recorded for the response trial
+      // (assumes it is the trial immediately before this one).
+      const prev = jsPsych.data.get().last(1).values()[0] || {};
+      const rtRecorded = Object.prototype.hasOwnProperty.call(prev, 'rt');
+      const clicked = rtRecorded
+        ? (prev.rt !== null && prev.rt !== undefined)  // rt is null on timeout
+        : !!lastFeedback.responded;                    // fall back if no rt field
+
+      const responded = clicked && !!lastFeedback.responded &&
+                        Number.isFinite(lastFeedback.respTheta);
+
+      shownFeedback = {
+        stim:        lastFeedback.stim,
+        rotation:    lastFeedback.rotation,
+        targetTheta: lastFeedback.targetTheta,
+        responded:   responded,
+        respTheta:   responded ? lastFeedback.respTheta : null,
+        absError:    responded ? lastFeedback.absError  : NaN
+      };
     }
   };
 
@@ -1410,7 +1433,7 @@ function makeBreakTrial(prevBlock) {
       return `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
         <h2>End of block. Please take a break</h2>
         <p>Average error in this block: ${avgText}</p>
-        <p>Blocks left to go: ${blocksLeft}</p>
+        <p>Remaining blocks: ${blocksLeft}</p>
         <p>Next block begins in: <span id="break-timer" style="font-variant-numeric:tabular-nums">--:--</span></p>
         <p>If you are ready now, press any key to skip the remaining break.</p></div>`;
     },
