@@ -1249,6 +1249,7 @@ const study = {
    * hue and wheel position differ only by the constant per-trial rotation.
    */
   
+    // Cleaned-up copy of lastFeedback used for drawing this feedback screen
   let shownFeedback = {};
 
   const feedback = {
@@ -1270,10 +1271,14 @@ const study = {
           const fb = shownFeedback;            // verified copy, not lastFeedback
           if (!fb.stim) return;
 
-          // Probe at the colour that was on screen at the click, or grey if
-          // the trial timed out without a click.
+          // Probe colour:
+          //  - responded: the colour that was on screen at the click
+          //  - timed out: the correct (target) colour, so it can still be learned
+          //  - fallback:  grey, if no valid target angle exists
           if (fb.responded) {
             drawStim(ctx, fb.stim, fb.respTheta, cx, cy, imageScale, fb.rotation);
+          } else if (Number.isFinite(fb.targetTheta)) {
+            drawStim(ctx, fb.stim, fb.targetTheta, cx, cy, imageScale, fb.rotation);
           } else {
             drawStimGrey(ctx, fb.stim, cx, cy, imageScale);
           }
@@ -1330,7 +1335,7 @@ const study = {
       };
     }
   };
-
+  
   // Inter-Trial Interval
 const iti = {
   type: jsPsychPsychophysics,
