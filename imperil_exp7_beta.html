@@ -897,7 +897,7 @@ async function runExperiment() {
   COND_NUMBER = assigned.index + 1;
   COND_SOURCE = assigned.source;
   jsPsych.data.addProperties({ cond_number: COND_NUMBER, cond_source: COND_SOURCE });
-  console.log(`Condition ${COND_NUMBER} (${COND_SOURCE})`);
+
 
   // Check r.ok: a missing file on GitHub Pages returns an HTML 404 page, and
   // r.json() would otherwise fail with a confusing parse error.
@@ -1186,7 +1186,7 @@ const study = {
 
       // Was read in on_finish but never assigned, so probe_stim was undefined.
       trialState.probeName = probeStimName;
-      console.log(trialState.probeName);
+     
 
       /*
        * Read the timeline variables here and keep them, instead of relying on
