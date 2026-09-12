@@ -120,6 +120,24 @@ const FEEDBACK_TEXT_COLOR   = 'rgb(0,0,0)';
 const FEEDBACK_FONT         = 'bold 28px sans-serif';
 const FEEDBACK_TEXT_GAP     = 40;    // gap between the ring and the error text
 
+/*
+ * MAIN-PHASE TIMEOUT WARNING.
+ *
+ * Training trials already carry a timeout message on their feedback screen.
+ * Main trials get this instead: the wheel and probe vanish, a single line of
+ * text sits in the centre of the screen for SLOW_WARNING_MS, and then the
+ * usual ITI runs. It is skipped entirely when the participant responded.
+ *
+ * SLOW_WARNING_ON_CONTEXT keeps the trial's context colour behind the text,
+ * so the screen sequence is context -> context+text -> grey ITI. Set it to
+ * false to put the warning on the grey ITI background instead.
+ */
+const SLOW_WARNING_MS         = 300;
+const SLOW_WARNING_TEXT       = 'Please respond quicker';
+const SLOW_WARNING_COLOR      = FEEDBACK_TEXT_COLOR;
+const SLOW_WARNING_FONT       = FEEDBACK_FONT;
+const SLOW_WARNING_ON_CONTEXT = true;
+
 // Scale the original size of the image
 const imageScale = 0.32;
 
@@ -530,6 +548,13 @@ const lastFeedback = {
   stim: null, responded: false,
   respTheta: null, targetTheta: null, rotation: 0, absError: null
 };
+
+/*
+ * Set at the end of every test trial and read by the conditional node that
+ * gates the main-phase timeout warning. Kept separate from lastFeedback so
+ * the warning does not depend on anything the feedback screen may reset.
+ */
+let lastTimedOut = false;
 
 function attachTracker() {
   // A previous trial that ended abnormally can leave its listeners bound.
@@ -1353,6 +1378,9 @@ const study = {
       lastFeedback.rotation    = R;
       lastFeedback.absError    = data.absAngularError;
 
+      // Gate for the main-phase timeout warning that may follow this trial.
+      lastTimedOut = !!data.timed_out;
+
       wheel.theta      = null;
       wheel.clickTheta = null;
     }
@@ -1454,6 +1482,66 @@ const study = {
         absError:    responded ? lastFeedback.absError  : NaN
       };
     }
+  };
+
+  /*
+   * MAIN-PHASE TIMEOUT WARNING.
+   *
+   * Shown only when the preceding test trial produced no click, and only on
+   * main trials (the timeline below puts it after `test` in the main branch
+   * only; training trials keep their existing feedback screen, which already
+   * prints its own timeout message).
+   *
+   * The wheel and the probe are simply not drawn, so they disappear the
+   * moment the test canvas is torn down. Nothing here touches wheel /
+   * trialRows / lastFeedback, so no logged quantity changes.
+   */
+  const slowWarning = {
+    type: jsPsychPsychophysics,
+    canvas_width: window.innerWidth,
+    canvas_height: window.innerHeight,
+    background_color: greyBackground,
+    origin_center: false,
+
+    stimuli: [
+      // Background — fill_color gets overwritten in on_start
+      { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+        fill_color: greyBackground, show_start_time: 0 },
+      {
+        obj_type: 'manual',
+        show_start_time: 0,
+        drawFunc: function (s, canvas, ctx) {
+          const { cx, cy } = drawingBox(canvas, ctx);
+          ctx.save();
+          ctx.fillStyle    = SLOW_WARNING_COLOR;
+          ctx.font         = SLOW_WARNING_FONT;
+          ctx.textAlign    = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(SLOW_WARNING_TEXT, cx, cy);
+          ctx.restore();
+        }
+      }
+    ],
+
+    choices: 'NO_KEYS',
+    trial_duration: SLOW_WARNING_MS,
+    data: { trial_part: 'slow_warning' },
+
+    on_start: function (trial) {
+      sizeToViewport(trial);
+      trial.stimuli[0].fill_color =
+        SLOW_WARNING_ON_CONTEXT ? trialState.context : greyBackground;
+    }
+  };
+
+  /*
+   * Wrapper that runs `slowWarning` only after a timed-out test trial.
+   * lastTimedOut is written at the end of test.on_finish, which jsPsych runs
+   * before it moves on to this node.
+   */
+  const slowWarningIfTimedOut = {
+    timeline: [slowWarning],
+    conditional_function: function () { return lastTimedOut === true; }
   };
 
   // Inter-Trial Interval
@@ -1580,7 +1668,8 @@ function makeBreakTrial(prevBlock) {
 
 /*
  * Each block is split into its training part and its main part. Training
- * trials get the feedback screen; main trials do not. The instructions screen
+ * trials get the feedback screen; main trials get the timeout warning screen
+ * instead, and only when they actually time out. The instructions screen
  * goes in front of the first main trial, wherever it falls: at a block
  * boundary or in the middle of a block.
  *
@@ -1605,7 +1694,8 @@ blocks.forEach((vars, k) => {
   }
   if (mainVars.length) {
     if (startsMain) timeline.push(mainInstructions);
-    timeline.push({ timeline: [study, test, iti], timeline_variables: mainVars });
+    timeline.push({ timeline: [study, test, slowWarningIfTimedOut, iti],
+                    timeline_variables: mainVars });
   }
 
   timeline.push(blockSave(k));
