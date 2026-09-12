@@ -91,16 +91,6 @@ let COND_SOURCE = null;   // 'datapipe' | 'url' | 'cached' | 'random'
  */
 const COND_HAS_THETA_COL = false;
 
-const nTrials = 672;
-const seriesLength = 6;
-const nSeries = nTrials/seriesLength;
-const nBlocks = 11;
-const BLOCK_SIZE = nTrials/nBlocks;
-
-let breaksRemaining = nBlocks-1;   // or whatever drives the decision
-const nCols = 2;
-const LAB_CACHE  = 12;            // LabStim objects kept resident (~4 MB each)
-
 /*
  * TRAINING.
  *
@@ -109,6 +99,10 @@ const LAB_CACHE  = 12;            // LabStim objects kept resident (~4 MB each)
  * wheel and a tick marks the correct position on the ring, for FEEDBACK_MS.
  * When training is over, an instructions screen introduces the main
  * experiment. Set N_TRAINING to 0 to run without training.
+ *
+ * Declared here, ahead of the trial counts, because nTrials is derived from
+ * it. A `const` cannot be read before its declaration line (temporal dead
+ * zone), so the order of these two blocks matters.
  */
 const N_TRAINING  = 12;
 const FEEDBACK_MS = 1250;
@@ -119,6 +113,38 @@ const FEEDBACK_TARGET_W     = 4;     // its line width
 const FEEDBACK_TEXT_COLOR   = 'rgb(0,0,0)';
 const FEEDBACK_FONT         = 'bold 28px sans-serif';
 const FEEDBACK_TEXT_GAP     = 40;    // gap between the ring and the error text
+
+/*
+ * TRIAL COUNTS AND BLOCK STRUCTURE.
+ *
+ * BLOCK_SIZE counts MAIN trials only, and nTrials is derived from it. The
+ * previous version did the opposite -- nTrials was set by hand to 672 and
+ * BLOCK_SIZE was nTrials/nBlocks -- which gave 672/11 = 61.0909..., a
+ * non-integer. Nothing guarded against that and nothing threw: Array.slice
+ * truncates fractional indices, so the chunking loop silently produced blocks
+ * of 61,61,...,62, all 12 practice trials landed inside the first chunk, and
+ * block 1 therefore ran only 49 main trials before the first break. The
+ * per-trial `block` label (floor(i/BLOCK_SIZE)+1) also disagreed with those
+ * chunk boundaries by one trial, so every block average was computed over the
+ * wrong set.
+ *
+ * Now: practice is its own chunk and is labelled block 0, so it is excluded
+ * from block averages; the main phase is exactly nBlocks * BLOCK_SIZE trials.
+ *
+ * The condition matrix must therefore supply nTrials usable rows, and its
+ * first N_TRAINING rows are consumed as practice.
+ */
+const nBlocks    = 11;
+const BLOCK_SIZE = 60;                                // MAIN trials per block
+const nTrials    = N_TRAINING + nBlocks * BLOCK_SIZE; // 12 + 660 = 672
+const N_LEAD     = N_TRAINING > 0 ? 1 : 0;            // practice occupies chunk 0
+
+const seriesLength = 6;
+const nSeries = nTrials/seriesLength;
+
+let breaksRemaining = nBlocks-1;   // or whatever drives the decision
+const nCols = 2;
+const LAB_CACHE  = 12;            // LabStim objects kept resident (~4 MB each)
 
 /*
  * MAIN-PHASE TIMEOUT WARNING.
@@ -726,6 +752,8 @@ function buildWorkbook(rows, jsPsych = null) {
     ['n_trials_logged', rows.length],
     ['n_trials_expected', nTrials],
     ['n_training', Math.min(N_TRAINING, nTrials)],
+    ['n_blocks', nBlocks],
+    ['block_size', BLOCK_SIZE],
     ['screen_w', window.innerWidth],
     ['screen_h', window.innerHeight],
     ['dpr', window.devicePixelRatio || 1],
@@ -789,7 +817,7 @@ function downloadText(text, filename, mime) {
  * participant's data is never lost over a file format.
  *
  * DataPipe refuses to overwrite an existing file, so every call must use a
- * unique filename: participant + session + tag (block1, block2, ..., final).
+ * unique filename: participant + session + tag (training, block1, ..., final).
  */
 async function postRows(rows, tag, jsPsych = null) {
   if (!DATAPIPE_ID || !rows.length) return { ok: false, skipped: true };
@@ -940,7 +968,7 @@ async function runExperiment() {
   }
   if (conditionMatrix.length - startRow < nTrials) {
     throw new Error(`conditionMatrix has ${conditionMatrix.length - startRow} usable rows, ` +
-                    `need ${nTrials}`);
+                    `need ${nTrials} (${N_TRAINING} practice + ${nBlocks} x ${BLOCK_SIZE} main)`);
   }
 
   // Unfold the flattened matrix
@@ -961,7 +989,15 @@ async function runExperiment() {
     const [rep1, novelStim] = imageMatrix[i];
 
     return {
-        block: Math.floor(i / BLOCK_SIZE) + 1,
+        /*
+         * Practice trials are block 0 and are excluded from the block
+         * averages on the break screen; main trials are numbered 1..nBlocks
+         * from the first post-practice trial, so trial N_TRAINING+1 is the
+         * first trial of block 1. Numbering off `i` alone, as the previous
+         * version did, put the practice trials inside block 1 and left it 12
+         * main trials short.
+         */
+        block: i < N_TRAINING ? 0 : Math.floor((i - N_TRAINING) / BLOCK_SIZE) + 1,
         rep, context,
         condTheta,
         colors: [rep1color, novel],
@@ -985,27 +1021,45 @@ async function runExperiment() {
     showLoading(`Loading stimuli\u2026 ${n}/${total}`, n / total);
   });
 
-  // Chop the entire events list into blocks.
+  /*
+   * Chop the entire events list into chunks. The practice trials form chunk 0
+   * (when N_TRAINING > 0) and each subsequent chunk is exactly BLOCK_SIZE
+   * main trials, so chunk k holds block k - N_LEAD + 1.
+   *
+   * The old loop stepped by nTrials/nBlocks from index 0, which was fractional
+   * and swallowed the practice trials into the first block.
+   */
   const blocks = [];
-  for (let i = 0; i < timelineVars.length; i += BLOCK_SIZE) {
+  if (N_LEAD) blocks.push(timelineVars.slice(0, N_TRAINING));
+  for (let i = N_TRAINING; i < timelineVars.length; i += BLOCK_SIZE) {
     blocks.push(timelineVars.slice(i, i + BLOCK_SIZE));
   }
+
+  // Chunk 0 is practice when N_LEAD is 1; everything after it is a real block.
+  const isPracticeChunk = k => N_LEAD === 1 && k === 0;
+  const blockNumberOf   = k => k - N_LEAD + 1;
 
 
   // This is important. We convert the colors of all the images within a given block beforehand for speed.
   // Thus, the rotated variants of each study image is precomputed for the color wheel at the start of each block.
   function blockPrep(k) {
+    // Label off the block number, not the chunk index: with practice sitting
+    // in chunk 0, `k + 1` would have counted up to "block 12 of 11".
+    const label = isPracticeChunk(k)
+      ? 'Preparing the practice trials\u2026'
+      : `Preparing block ${blockNumberOf(k)} of ${nBlocks}\u2026`;
+
     return {
       type: jsPsychCallFunction,
       async: true,
       func: function (done) {
         const ids = [...new Set(blocks[k].flatMap(v => v.stimNames))];
-        showLoading(`Preparing block ${k + 1} of ${nBlocks}\u2026`, 0);
+        showLoading(label, 0);
         let n = 0;
         const step = () => {
           if (n < ids.length) {
             getLab(ids[n++]);
-            showLoading(`Preparing block ${k + 1} of ${nBlocks}\u2026`, n / ids.length);
+            showLoading(label, n / ids.length);
             setTimeout(step, 0);              // yield so the bar actually paints
           } else {
             hideLoading();
@@ -1018,6 +1072,13 @@ async function runExperiment() {
   }
 
   function blockSave(k) {
+    const practice = isPracticeChunk(k);
+    const blockNum = blockNumberOf(k);
+    // Upload tag, and therefore the DataPipe filename. Tagged off the block
+    // number so block3.xlsx really is block 3.
+    const tag   = practice ? 'training' : `block${blockNum}`;
+    const label = practice ? 'practice' : `block ${blockNum}`;
+
     return {
       type: jsPsychCallFunction,
       async: true,
@@ -1026,13 +1087,13 @@ async function runExperiment() {
         try {
           localStorage.setItem(
             `ipw_${PARTICIPANT_ID}_s${SESSION_ID}`,
-            JSON.stringify({ savedAt: Date.now(), block: k + 1, rows: trialRows })
+            JSON.stringify({ savedAt: Date.now(), block: practice ? 0 : blockNum, rows: trialRows })
           );
         } catch (e) {
           console.warn('local backup failed:', e);   // quota / private mode
         }
-        console.log(`block ${k + 1} complete: ${trialRows.length} test rows logged`);
-        if (SAVE_BLOCKS) saveIncremental(`block${k + 1}`).catch(console.warn);
+        console.log(`${label} complete: ${trialRows.length} test rows logged`);
+        if (SAVE_BLOCKS) saveIncremental(tag).catch(console.warn);
       }
     };
   }
@@ -1647,7 +1708,8 @@ function startCountdown(seconds, display) {
  * Average absolute error for one block, shown on the break screen. Read from
  * trialRows, the script's own trial log, rather than from jsPsych's data
  * store, which is where on_finish keys were being dropped (see the note above
- * trialRows). Missed trials (null) are left out of the average.
+ * trialRows). Missed trials (null) are left out of the average, and so are
+ * the practice trials, which carry block 0.
  */
 function averageErrorCalculate(blockNum) {
   const nums = trialRows
@@ -1689,15 +1751,21 @@ function makeBreakTrial(prevBlock) {
 }
 
 /*
- * Each block is split into its training part and its main part. Training
+ * Each chunk is split into its training part and its main part. Training
  * trials get the feedback screen; main trials get the timeout warning screen
  * instead, and only when they actually time out. The instructions screen
- * goes in front of the first main trial, wherever it falls: at a block
- * boundary or in the middle of a block.
+ * goes in front of the first main trial, wherever it falls.
  *
- * If training ends exactly on a block boundary, the regular break at that
- * boundary is replaced by the instructions screen (which is self-paced), so
- * participants do not get two pauses in a row.
+ * With the practice trials in their own chunk, the layout is:
+ *
+ *   chunk 0  : 12 practice trials (block 0)
+ *   chunk 1  : instructions, then 60 main trials (block 1, trials 13-72)
+ *   chunk 2  : break, then 60 main trials (block 2, trials 73-132)
+ *   ...
+ *   chunk 11 : break, then 60 main trials (block 11, trials 613-672)
+ *
+ * The break before chunk 1 is suppressed because the instructions screen is
+ * itself self-paced, so participants never get two pauses in a row.
  */
 blocks.forEach((vars, k) => {
   const trainVars = vars.filter(v => v.isTraining);
