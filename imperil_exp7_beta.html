@@ -1588,7 +1588,7 @@ const iti = {
     stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
       <h2>Training complete</h2>
       <p>Now it's time for the actual experiment. From now on you will no
-         longer see your error after each response.</p>
+         longer see your error after each response, but only during break times as your average error in that block.</p>
       <p><b>Good luck!</b></p>
       <p>Press any key to begin.</p></div>`,
     choices: 'ALL_KEYS',
@@ -1618,6 +1618,8 @@ const iti = {
       <p>Then one object will reappear in the centre of a colour ring. Move the
          mouse around the ring to change its colour, and <b>click</b> when it
          matches the colour you saw.</p>
+      <p>After you click, you'll briefly see your error, which shows how far your response was from the correct color.</p>
+      <p>The smaller your error, the closer you are to the correct answer. Try to minimize your error throughout the study.</p>
       <p><b>You are now about to start a brief training part</b></p>
       <p>Press any key to start.</p></div>`,
     on_finish: () => hideLoading()
