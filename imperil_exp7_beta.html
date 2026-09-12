@@ -195,7 +195,7 @@ const STUDY_ID       = params.get('STUDY_ID') || '';
 
 // DataPipe and Prolific
 const DATAPIPE_ID      = 'uZQGcGEKiUdI';
-const PROLIFIC_CC      = 'CP3YOCI3';    // normal completion code
+const PROLIFIC_CC      = 'C18AT6MT';    // normal completion code
 const PROLIFIC_CC_FAIL = 'SAVEFAIL';    // replace with the code of your second completion path
 
 function withTimeout(promise, ms) {
@@ -864,7 +864,7 @@ async function runExperiment() {
   // Upload the full dataset at the end, then send the participant back to Prolific
   const jsPsych = initJsPsych({
     on_finish: async function () {
-      showLoading('Saving your data\u2026');
+      showLoading('Saving your data. Please do not exit.\u2026');
       const res = await postRows(trialRows, 'final', jsPsych);
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       if (res.ok) {
