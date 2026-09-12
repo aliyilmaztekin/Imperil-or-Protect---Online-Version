@@ -1247,11 +1247,31 @@ const study = {
        * the participant merely moved the mouse was scored as a response, at
        * whatever angle the cursor happened to be resting.
        *
-       * data.click_x is set by the plugin, so it is an independent witness to
-       * the click; wheel.clickTheta is preferred because it is the value that
+       * click_x is NOT a usable witness. psychophysics 5.1.0 initialises its
+       * internal response object as { rt: null, key: null } and then writes
+       *
+       *     click_x: trial.response_type === 'mouse' ? response.clickX - centerX : null
+       *
+       * unconditionally at the end of every mouse trial. With no click,
+       * response.clickX is undefined, so the subtraction yields NaN rather
+       * than null -- and `NaN != null` is true. The old test therefore passed
+       * on EVERY test trial, so any timed-out trial in which the cursor had
+       * moved fell back to wheel.theta and was scored as a response. That is
+       * exactly why the timeout warning appeared only when the probe had
+       * stayed grey: a moved cursor made wheel.theta non-null, data.responded
+       * came out true, and slowWarningIfTimedOut was skipped.
+       *
+       * Kill the NaN sentinel first, so it cannot reach the data file either
+       * (it was also producing NaN click_theta / click_radius below), then
+       * gate on data.rt, which the plugin writes only from mouseDownFunc and
+       * leaves null on a timeout. wheel.clickTheta, set by our own
+       * pointerdown handler, is still preferred because it is the value that
        * actually drove the rendered hue.
        */
-      const pluginClicked = data.click_x != null;
+      if (!Number.isFinite(data.click_x)) data.click_x = null;
+      if (!Number.isFinite(data.click_y)) data.click_y = null;
+
+      const pluginClicked = data.rt != null && data.click_x != null;
       const respTheta = (wheel.clickTheta != null) ? wheel.clickTheta
                       : (pluginClicked ? wheel.theta : null);
 
