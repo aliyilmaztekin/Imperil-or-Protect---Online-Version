@@ -1244,6 +1244,7 @@ const study = {
       rep:          jsPsych.timelineVariable('rep'),
       cond_context: jsPsych.timelineVariable('context'),
       probe:        jsPsych.timelineVariable('probe'),
+      
       cond_theta:   jsPsych.timelineVariable('condTheta'),
     },
 
@@ -1252,6 +1253,8 @@ const study = {
       const allItems = jsPsych.evaluateTimelineVariable('stimNames');
       const probeStimIndex = jsPsych.evaluateTimelineVariable('probe');
       const probeStimName = allItems[Number(probeStimIndex-1)];
+
+      console.log(probe);
 
       // Was read in on_finish but never assigned, so probe_stim was undefined.
       trialState.probeName = probeStimName;
