@@ -1254,8 +1254,6 @@ const study = {
       const probeStimIndex = jsPsych.evaluateTimelineVariable('probe');
       const probeStimName = allItems[Number(probeStimIndex-1)];
 
-      console.log(probeStimIndex);
-       console.log(probeStimName);
 
       // Was read in on_finish but never assigned, so probe_stim was undefined.
       trialState.probeName = probeStimName;
