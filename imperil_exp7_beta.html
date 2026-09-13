@@ -550,11 +550,19 @@ function drawWheel(ctx, cx, cy, currentTheta) {
 
 // Dynamically track where the mouse is to rotate the color of the probe object
 
+/*
+ * The candidate per-trial rotations. Drawn from in test.on_start, with the
+ * immediately preceding trial's value excluded so that the same offset is
+ * never used twice in a row.
+ */
+const ROTATION_SET = [45, 90, 135, 180, 225, 270, 315];
+
 const wheel = {
   angle: null, radius: null,
   theta: null,          // cursor position in wheel space
   clickTheta: null,     // theta frozen at the moment of the click
   randomRotation: 0,    // per-trial offset between wheel space and hue
+  prevRotation: null,   // previous trial's offset, excluded from the next draw
   targetHue: null,
   cx: null, cy: null,   // drawing-unit centre, for the click cross-check
   stim: null, detach: null,
@@ -1264,9 +1272,23 @@ const study = {
       trialState.condTheta   = jsPsych.evaluateTimelineVariable('condTheta');
       trialState.probeIndex  = probeStimIndex;
 
-      const randomRotation = () =>
-          jsPsych.randomization.sampleWithoutReplacement([45, 90, 135, 180, 225, 270, 315], 1)[0];
+      /*
+       * Draw the per-trial offset, excluding whatever was used on the
+       * preceding trial so that no rotation repeats back to back. Filtering
+       * the pool rather than resampling until the value differs keeps this
+       * bounded: one draw, always, from the 6 remaining candidates. Each of
+       * those 6 stays equally likely, so marginal frequencies over the block
+       * remain flat apart from the repeat exclusion itself.
+       *
+       * prevRotation is null on the very first trial, so nothing is filtered
+       * out there and all 7 are in play.
+       */
+      const randomRotation = () => {
+        const candidates = ROTATION_SET.filter(r => r !== wheel.prevRotation);
+        return jsPsych.randomization.sampleWithoutReplacement(candidates, 1)[0];
+      };
       wheel.randomRotation = randomRotation();
+      wheel.prevRotation   = wheel.randomRotation;
 
       wheel.targetHue = Number(trialState.colors[Number(probeStimIndex - 1)]);
       trial.stimuli[0].fill_color = trialState.context;
