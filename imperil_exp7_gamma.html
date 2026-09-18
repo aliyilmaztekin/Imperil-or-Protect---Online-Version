@@ -134,10 +134,10 @@ const FEEDBACK_TEXT_GAP     = 40;    // gap between the ring and the error text
  * The condition matrix must therefore supply nTrials usable rows, and its
  * first N_TRAINING rows are consumed as practice.
  */
-const nBlocks    = 11;
-const BLOCK_SIZE = 60;                                // MAIN trials per block
-const nTrials    = N_TRAINING + nBlocks * BLOCK_SIZE; // 12 + 660 = 672
-const N_LEAD     = N_TRAINING > 0 ? 1 : 0;            // practice occupies chunk 0
+const nBlocks    = 10;
+const BLOCK_SIZE = 60;                                
+const nTrials    = N_TRAINING + nBlocks * BLOCK_SIZE; 
+const N_LEAD     = N_TRAINING > 0 ? 1 : 0;            
 
 const seriesLength = 6;
 const nSeries = nTrials/seriesLength;
