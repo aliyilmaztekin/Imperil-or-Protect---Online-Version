@@ -58,7 +58,7 @@ const SRC_EXT  = '.png';
 
 // Condition files. DataPipe returns 0..14; files are numbered 01..15.
 const N_CONDITIONS  = 15;
-const COND_BASE_URL = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFilesBeta/';
+const COND_BASE_URL = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFilesGamma/';
 
 // Set to false if all 15 conditions share a single image matrix.
 const IMAGE_PER_CONDITION = true;
@@ -991,7 +991,7 @@ async function runExperiment() {
     const condTheta = COND_HAS_THETA_COL ? row[5] : null;
 
     const [rep, context, rep1color, novel, probe,
-            pos1x, pos1y, pos3x, pos3y, stimID1, stimID3] = cols;
+            stimID1, stimID3] = cols;
 
     // Also get the stimulus names
     const [rep1, novelStim] = imageMatrix[i];
@@ -1010,10 +1010,6 @@ async function runExperiment() {
         condTheta,
         colors: [rep1color, novel],
         probe,
-        positions: [
-        { x: pos1x, y: pos1y },
-        { x: pos3x, y: pos3y }
-        ],
         trialCount: i + 1,
         isTraining: i < N_TRAINING,     // the first N_TRAINING trials are practice
         stimNames: [rep1, novelStim],
@@ -1134,7 +1130,6 @@ const study = {
         drawStim(ctx, trialState.stims[0], trialState.colors[0],
                 cx,
                 cy, imageScale, 0);
-        
       }
     },
 
@@ -1144,7 +1139,6 @@ const study = {
         drawStim(ctx, trialState.stims[1], trialState.colors[1],
                 cx,
                 cy, imageScale, 0);
-        
       }
     }
   ],
@@ -1186,7 +1180,6 @@ const study = {
     trial.stimuli[0].fill_color = curContextColor;
 
     trialState.stims  = allItems.map(getLab);
-    trialState.pos    = jsPsych.evaluateTimelineVariable('positions');
     trialState.colors = jsPsych.evaluateTimelineVariable('colors');
 
     trialState.stimNames   = allItems.join('|');
