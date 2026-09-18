@@ -196,7 +196,7 @@ const RING_INNER = 60, RING_OUTER = 400;
 // Event durations (in milliseconds)
 const STUDY_MS = 1900, STUDY_STIM_MS = 800;
 const TEST_MS  = 4300, TEST_STIM_MS  = 4000;
-const ITI_MS   = 300, habituationDuration = 800;
+const ITI_MS   = 300;
 
 // Context colors pre-defined here.
 const contextColors = ['rgb(165, 127, 151)', 'rgb(135, 174, 116)'];
@@ -1116,27 +1116,49 @@ async function runExperiment() {
     probeName: null, stimNames: null, studyColors: null
   };
 
-const habituation = {
-    type: jsPsychPsychophysics,
-    canvas_width: window.innerWidth,
-    canvas_height: window.innerHeight,
-    background_color: greyBackground,
-    origin_center: false,
+const study = {
+  type: jsPsychPsychophysics,
+  canvas_width: window.innerWidth,
+  canvas_height: window.innerHeight,
+  background_color: greyBackground,
+  origin_center: false,
 
-    stimuli: [{
-        obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
-        fill_color: greyBackground, show_start_time: 0
-    }],
-    choices: 'NO_KEYS',
-    trial_duration: habituationDuration,
+  stimuli: [
+    // Background — fill_color gets overwritten in on_start
+    { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+      fill_color: greyBackground, show_start_time: 0 },
 
-    data: {
-        trial_part: 'habituation',
-        block:      jsPsych.timelineVariable('block'),
-        trialCount: jsPsych.timelineVariable('trialCount'),
+    { obj_type: 'manual', show_start_time: 800, show_end_time: 1200,
+      drawFunc: function (s, canvas, ctx) {
+        const { cx, cy } = drawingBox(canvas, ctx);
+        drawStim(ctx, trialState.stims[0], trialState.colors[0],
+                cx + trialState.pos[0].x,
+                cy + trialState.pos[0].y, imageScale, 0);
+        
+      }
     },
 
-    on_start: function (trial) {
+    { obj_type: 'manual', show_start_time: 1200, show_end_time: 1600,
+      drawFunc: function (s, canvas, ctx) {
+        const { cx, cy } = drawingBox(canvas, ctx);
+        drawStim(ctx, trialState.stims[1], trialState.colors[1],
+                cx + trialState.pos[1].x,
+                cy + trialState.pos[1].y, imageScale, 0);
+        
+      }
+    }
+  ],
+  choices: 'NO_KEYS',
+  trial_duration: 2000 + 800,
+
+  data: {
+    trial_part: 'study',
+    block:      jsPsych.timelineVariable('block'),
+    trialCount: jsPsych.timelineVariable('trialCount'),
+  },
+
+
+  on_start: function (trial) {
     sizeToViewport(trial);
     const trialCount = jsPsych.evaluateTimelineVariable('trialCount');
 
@@ -1159,99 +1181,6 @@ const habituation = {
         curContextColor = trialState.context;
       }
     }
-
-    trialState.context = curContextColor;
-    trial.stimuli[0].fill_color = curContextColor;
-
-    trialState.stims  = allItems.map(getLab);
-    trialState.pos    = jsPsych.evaluateTimelineVariable('positions');
-    trialState.colors = jsPsych.evaluateTimelineVariable('colors');
-
-    trialState.stimNames   = allItems.join('|');
-    trialState.studyColors = trialState.colors.join('|');
-  },
-};
-
-const study = {
-  type: jsPsychPsychophysics,
-  canvas_width: window.innerWidth,
-  canvas_height: window.innerHeight,
-  background_color: greyBackground,
-  origin_center: false,
-
-  stimuli: [
-    // Background — fill_color gets overwritten in on_start
-    { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
-      fill_color: greyBackground, show_start_time: 0 },
-
-    { obj_type: 'manual', show_start_time: 0, show_end_time: STUDY_STIM_MS,
-      drawFunc: function (s, canvas, ctx) {
-        const { cx, cy } = drawingBox(canvas, ctx);
-          drawStim(ctx, trialState.stims[0], trialState.colors[0],
-                   cx + trialState.pos[0].x,
-                   cy + trialState.pos[0].y, imageScale, 0);
-        
-      }
-    }
-  ],
-  choices: 'NO_KEYS',
-  trial_duration: STUDY_MS,
-
-  data: {
-    trial_part: 'study',
-    block:      jsPsych.timelineVariable('block'),
-    trialCount: jsPsych.timelineVariable('trialCount'),
-  },
-
-  on_start: function (trial) {
-    sizeToViewport(trial);
-
-    trialState.context = curContextColor;
-    trial.stimuli[0].fill_color = curContextColor;
-  },
-
-  on_finish: function (data) {
-    data.context_color = trialState.context;
-  }
-};
-
-const study2 = {
-  type: jsPsychPsychophysics,
-  canvas_width: window.innerWidth,
-  canvas_height: window.innerHeight,
-  background_color: greyBackground,
-  origin_center: false,
-
-  stimuli: [
-    // Background — fill_color gets overwritten in on_start
-    { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
-      fill_color: greyBackground, show_start_time: 0 },
-
-    { obj_type: 'manual', show_start_time: 0, show_end_time: STUDY_STIM_MS,
-      drawFunc: function (s, canvas, ctx) {
-        const { cx, cy } = drawingBox(canvas, ctx);
-        drawStim(ctx, trialState.stims[1], trialState.colors[1],
-                cx + trialState.pos[1].x,
-                cy + trialState.pos[1].y, imageScale, 0);
-      }
-    }
-  ],
-  choices: 'NO_KEYS',
-  trial_duration: STUDY_MS,
-
-  data: {
-    trial_part: 'study',
-    block:      jsPsych.timelineVariable('block'),
-    trialCount: jsPsych.timelineVariable('trialCount'),
-  },
-
-  on_start: function (trial) {
-    sizeToViewport(trial);
-    const trialCount = jsPsych.evaluateTimelineVariable('trialCount');
-
-    // Was previously referenced but never declared here, which threw a
-    // ReferenceError at the bottom of this function.
-    const allItems = jsPsych.evaluateTimelineVariable('stimNames');
 
     trialState.context = curContextColor;
     trial.stimuli[0].fill_color = curContextColor;
@@ -1338,6 +1267,7 @@ const study2 = {
       // Was read in on_finish but never assigned, so probe_stim was undefined.
       trialState.probeName = probeStimName;
      
+
       /*
        * Read the timeline variables here and keep them, instead of relying on
        * the trial-level `data` parameter, which is where block / trialCount /
@@ -1883,11 +1813,11 @@ blocks.forEach((vars, k) => {
   }
 
   if (trainVars.length) {
-    timeline.push({ timeline: [habituation, study, study2, test, feedback, iti], timeline_variables: trainVars });
+    timeline.push({ timeline: [study, test, feedback, iti], timeline_variables: trainVars });
   }
   if (mainVars.length) {
     if (startsMain) timeline.push(mainInstructions);
-    timeline.push({ timeline: [habituation, study, study2, test, slowWarningIfTimedOut, iti],
+    timeline.push({ timeline: [study, test, slowWarningIfTimedOut, iti],
                     timeline_variables: mainVars });
   }
 
