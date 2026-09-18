@@ -1,0 +1,1916 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Imperil-Protect-Web</title>
+
+    <!-- The root folder where all the contens of the experiment live-->
+    <!-- Defines the cosmetics of everything -->
+    <link href="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych/dist/jspsych.css" rel="stylesheet" type="text/css" />
+
+    <!-- Load in the plug-ins from the root folder defined above-->
+    <!-- Make sure jsPsych comes first!-->
+    <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych/dist/jspsych.js"></script>
+    <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych/dist/plugin-html-keyboard-response.js"></script>
+    <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych/dist/plugin-call-function.js"></script>
+    <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych/dist/plugin-fullscreen.js"></script>
+    <script src="https://unpkg.com/@jspsych-contrib/plugin-pipe"></script>
+
+    <!-- The jsPsychophysics script-->
+    <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych-psychophysics-v.5.1.0/jspsych-psychophysics.js"></script>
+
+    <!-- Import the color rotation code -->
+    <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/colorWheelTools/labrotate.js"></script>
+
+    <!-- SheetJS, used to build the .xlsx files uploaded to OSF. Consider
+         vendoring this file into your repo next to the other plug-ins: a CDN
+         outage during data collection would otherwise silently downgrade the
+         uploads to the CSV fallback. -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+
+    <style>
+      /* The psychophysics plugin sets canvas.style.width/height itself.
+         Forcing 100vw/100vh here decouples layout size from drawing size and
+         makes pointer coordinates disagree with drawn coordinates. */
+      canvas { display: block; margin: 0 auto; }
+      html, body { height: 100%; overflow: hidden; margin: 0; background: rgb(128,128,128); }
+      #loadscreen {
+        position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 12px;
+        font-family: sans-serif; font-size: 18px;
+        background: rgb(128,128,128); color: #fff; z-index: 9999;
+      }
+      #loadscreen.hidden { display: none; }
+      #loadbar { width: 320px; height: 6px; background: rgba(255,255,255,.25); }
+      #loadbar > div { height: 100%; width: 0; background: #fff; transition: width .15s linear; }
+    </style>
+  </head>
+  <body>
+  <div id="loadscreen"><span id="loadtext">Starting&hellip;</span><div id="loadbar"><div></div></div></div>
+  <script>
+'use strict';
+
+// CONFIG:
+
+// Study images
+const SRC_ROOT = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/colorWheelTools/TestObjectsTransparentExp7';
+const SRC_EXT  = '.png';
+
+// Condition files. DataPipe returns 0..14; files are numbered 01..15.
+const N_CONDITIONS  = 15;
+const COND_BASE_URL = 'https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/condFilesBeta/';
+
+// Set to false if all 15 conditions share a single image matrix.
+const IMAGE_PER_CONDITION = true;
+const FIXED_IMAGE_URL     = COND_BASE_URL + 'imageMatrix.json';
+
+function conditionUrls(index) {
+  const num = String(index + 1).padStart(2, '0');       // 0 -> "01", 14 -> "15"
+  return {
+    cond:  `${COND_BASE_URL}conditionMatrix_${num}.json`,
+    image: IMAGE_PER_CONDITION ? `${COND_BASE_URL}imageMatrix_${num}.json` : FIXED_IMAGE_URL
+  };
+}
+
+// Filled in once at startup, read by the data-saving code.
+let COND_NUMBER = null;   // 1..15, matches the file name
+let COND_SOURCE = null;   // 'datapipe' | 'url' | 'cached' | 'random'
+
+/*
+ * CHECK THIS BEFORE COLLECTING DATA.
+ *
+ * The original header comment described the row layout as
+ *     rep, context, rep1color, rep2color, novel, theta, probe, pos...
+ * but the destructuring below read
+ *     rep, context, rep1color, rep2color, novel, probe, pos...
+ * i.e. with no theta column. The two disagree by one position, and if the
+ * comment is the correct one then every "probe" read was actually a theta,
+ * every position was shifted by one, and angularError was scored against the
+ * wrong target. Open one row of conditionMatrixTest.json and set this flag to
+ * match reality.
+ */
+const COND_HAS_THETA_COL = false;
+
+/*
+ * TRAINING.
+ *
+ * The first N_TRAINING trials of the condition matrix are practice trials.
+ * After each click the absolute angular error is printed above the colour
+ * wheel and a tick marks the correct position on the ring, for FEEDBACK_MS.
+ * When training is over, an instructions screen introduces the main
+ * experiment. Set N_TRAINING to 0 to run without training.
+ *
+ * Declared here, ahead of the trial counts, because nTrials is derived from
+ * it. A `const` cannot be read before its declaration line (temporal dead
+ * zone), so the order of these two blocks matters.
+ */
+const N_TRAINING  = 12;
+const FEEDBACK_MS = 1250;
+
+const FEEDBACK_TARGET_COLOR = 'rgb(255,255,255)';  // correct-answer tick
+const FEEDBACK_TARGET_LEN   = 22;    // half-length of that tick, in canvas px
+const FEEDBACK_TARGET_W     = 4;     // its line width
+const FEEDBACK_TEXT_COLOR   = 'rgb(0,0,0)';
+const FEEDBACK_FONT         = 'bold 28px sans-serif';
+const FEEDBACK_TEXT_GAP     = 40;    // gap between the ring and the error text
+
+/*
+ * TRIAL COUNTS AND BLOCK STRUCTURE.
+ *
+ * BLOCK_SIZE counts MAIN trials only, and nTrials is derived from it. The
+ * previous version did the opposite -- nTrials was set by hand to 672 and
+ * BLOCK_SIZE was nTrials/nBlocks -- which gave 672/11 = 61.0909..., a
+ * non-integer. Nothing guarded against that and nothing threw: Array.slice
+ * truncates fractional indices, so the chunking loop silently produced blocks
+ * of 61,61,...,62, all 12 practice trials landed inside the first chunk, and
+ * block 1 therefore ran only 49 main trials before the first break. The
+ * per-trial `block` label (floor(i/BLOCK_SIZE)+1) also disagreed with those
+ * chunk boundaries by one trial, so every block average was computed over the
+ * wrong set.
+ *
+ * Now: practice is its own chunk and is labelled block 0, so it is excluded
+ * from block averages; the main phase is exactly nBlocks * BLOCK_SIZE trials.
+ *
+ * The condition matrix must therefore supply nTrials usable rows, and its
+ * first N_TRAINING rows are consumed as practice.
+ */
+const nBlocks    = 11;
+const BLOCK_SIZE = 60;                                // MAIN trials per block
+const nTrials    = N_TRAINING + nBlocks * BLOCK_SIZE; // 12 + 660 = 672
+const N_LEAD     = N_TRAINING > 0 ? 1 : 0;            // practice occupies chunk 0
+
+const seriesLength = 6;
+const nSeries = nTrials/seriesLength;
+
+let breaksRemaining = nBlocks-1;   // or whatever drives the decision
+const nCols = 2;
+const LAB_CACHE  = 12;            // LabStim objects kept resident (~4 MB each)
+
+/*
+ * MAIN-PHASE TIMEOUT WARNING.
+ *
+ * Training trials already carry a timeout message on their feedback screen.
+ * Main trials get this instead: the wheel and probe vanish, a single line of
+ * text sits in the centre of the screen for SLOW_WARNING_MS, and then the
+ * usual ITI runs. It is skipped entirely when the participant responded.
+ *
+ * SLOW_WARNING_ON_CONTEXT keeps the trial's context colour behind the text,
+ * so the screen sequence is context -> context+text -> grey ITI. Set it to
+ * false to put the warning on the grey ITI background instead.
+ */
+const SLOW_WARNING_MS         = 300;
+const SLOW_WARNING_TEXT       = 'Please respond quicker';
+const SLOW_WARNING_COLOR      = FEEDBACK_TEXT_COLOR;
+const SLOW_WARNING_FONT       = FEEDBACK_FONT;
+const SLOW_WARNING_ON_CONTEXT = true;
+
+// Scale the original size of the image
+const imageScale = 0.32;
+
+// Color wheel circle
+const CIRCLE_R      = 169;
+const CIRCLE_LINE_W = 3;
+const CIRCLE_COLOR  = 'rgb(0,0,0)';
+const WHEEL_MARKER  = true;        // short tick showing the current angle
+const MARKER_COLOR  = 'rgb(0,0,0)';
+const MARKER_LEN    = 12;          // half-length of the tick, in canvas px
+
+// Cursor angle -> theta.  theta = mod(WHEEL_DIR * screenAngle + WHEEL_OFFSET)
+const WHEEL_DIR    = -1;
+const WHEEL_OFFSET = 90;
+
+const THETA_MIN = 0;
+const N_THETA   = 360;
+
+/*
+ * UNUSED. Nothing ever populates trialState.wheelRef, so the wheel_L / wheel_C
+ * / wheel_h0 columns were never written. The constants are left here as a
+ * reminder that the feature is unimplemented, not as live configuration.
+ */
+const WHEEL_REF = 'stimulus';
+const WHEEL_FIXED_L = 70, WHEEL_FIXED_C = 38, WHEEL_FIXED_H = 0;
+
+const REQUIRE_INSIDE_RING = false;
+const RING_INNER = 60, RING_OUTER = 400;
+
+// Event durations (in milliseconds)
+const STUDY_MS = 1900, STUDY_STIM_MS = 800;
+const TEST_MS  = 4300, TEST_STIM_MS  = 4000;
+const ITI_MS   = 300, habituationDuration = 800;
+
+// Context colors pre-defined here.
+const contextColors = ['rgb(165, 127, 151)', 'rgb(135, 174, 116)'];
+const greyBackground = 'rgb(128, 128, 128)';
+
+// The first context in the experiment is chosen here on a coin flip
+const startContext = Math.round(Math.random());
+
+/*
+ * Data saving. After every block and at the end, the data are uploaded to
+ * OSF through DataPipe as .xlsx files (see postRows). If SheetJS is missing
+ * the upload falls back to CSV. The local download only happens if the final
+ * upload fails completely.
+ */
+const SAVE_BLOCKS = true;               // upload after every block, not just at the end
+const DOWNLOAD_LOCAL_FALLBACK = true;   // download the .xlsx if the final upload fails
+
+const params = new URLSearchParams(location.search);
+const PARTICIPANT_ID = params.get('PROLIFIC_PID') || params.get('id') || `anon-${Date.now()}`;
+const SESSION_ID     = params.get('SESSION_ID') || params.get('session') || '1';
+const STUDY_ID       = params.get('STUDY_ID') || '';
+
+// DataPipe and Prolific
+const DATAPIPE_ID      = 'uZQGcGEKiUdI';
+const PROLIFIC_CC      = 'C18AT6MT';    // normal completion code
+const PROLIFIC_CC_FAIL = 'SAVEFAIL';    // replace with the code of your second completion path
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms))
+  ]);
+}
+
+async function assignCondition() {
+  const isValid = v => Number.isInteger(v) && v >= 0 && v < N_CONDITIONS;
+
+  // 1. Manual override for testing: ?cond=5 runs conditionMatrix_05 without
+  //    touching the DataPipe counter.
+  const forced = params.get('cond');
+  if (forced !== null && isValid(Number(forced) - 1)) {
+    return { index: Number(forced) - 1, source: 'url' };
+  }
+
+  // 2. A page reload should not use up a new slot or switch the participant
+  //    to a different matrix halfway through.
+  const cacheKey = `ipw_cond_${PARTICIPANT_ID}_s${SESSION_ID}`;
+  try {
+    const stored = JSON.parse(localStorage.getItem(cacheKey));
+    if (stored && isValid(stored.index)) return { index: stored.index, source: 'cached' };
+  } catch (e) { /* private mode or corrupt entry: just ask DataPipe */ }
+
+  // 3. Ask DataPipe for the next condition in the cycle.
+  let result;
+  try {
+    if (typeof jsPsychPipe === 'undefined') throw new Error('plugin-pipe did not load');
+    const c = await withTimeout(jsPsychPipe.getCondition(DATAPIPE_ID), 10000);
+    const index = (c === null || c === undefined || c === '') ? NaN : Number(c);
+    if (!isValid(index)) throw new Error(`DataPipe returned ${JSON.stringify(c)}`);
+    result = { index, source: 'datapipe' };
+  } catch (err) {
+    // Never let a counter problem stop the study.
+    console.warn('Condition assignment failed, assigning randomly:', err);
+    result = { index: Math.floor(Math.random() * N_CONDITIONS), source: 'random' };
+  }
+
+  try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch (e) {}
+  return result;
+}
+
+// Conversion functions
+
+const mod = (x, m) => ((x % m) + m) % m;
+
+// theta from a screen angle measured CCW from +x with y pointing up.
+const thetaFromAngle = deg => THETA_MIN + mod(Math.round(WHEEL_DIR * deg + WHEEL_OFFSET), N_THETA);
+
+// Exact inverse, used to paint the wheel so the colour under the cursor is
+// the colour on screen. Valid because WHEEL_DIR is +/-1.
+const angleFromTheta = th => mod(WHEEL_DIR * (th - THETA_MIN - WHEEL_OFFSET), 360);
+
+// Signed circular difference in degrees, in (-180, 180].
+const circDiff = (a, b) => mod(a - b + 180, 360) - 180;
+
+/*
+ * jspsych-psychophysics sets  canvas.width = canvas_width * devicePixelRatio
+ * and then  ctx.scale(dpr, dpr).  So drawing coordinates are CSS pixels while
+ * canvas.width is the backing store, dpr times larger. Using canvas.width / 2
+ * as the centre overshoots by exactly dpr and throws everything into the
+ * bottom-right corner on HiDPI displays.
+ *
+ * Read the scale off the context instead of assuming devicePixelRatio, so this
+ * stays correct if the plugin ever changes its scaling policy.
+ */
+function drawingBox(canvas, ctx) {
+  const t = ctx.getTransform();
+  const sx = t.a || 1, sy = t.d || 1;
+  const w = canvas.width / sx, h = canvas.height / sy;
+  return { w, h, cx: w / 2, cy: h / 2, sx, sy };
+}
+
+const loadEl   = document.getElementById('loadscreen');
+const loadText = document.getElementById('loadtext');
+const loadFill = document.querySelector('#loadbar > div');
+
+function showLoading(text, frac) {
+  if (!loadEl) return;
+  loadEl.classList.remove('hidden');
+  loadText.textContent = text;
+  loadFill.style.width = (frac == null ? 0 : Math.round(frac * 100)) + '%';
+}
+const hideLoading = () => loadEl && loadEl.classList.add('hidden');
+
+// jsonencode in Matlab flattens multi-column matrices into a single column.
+// To re-establish the 900x3 structure, reshape the imageMatrix
+function reshapeMatrix(matrix, nCols) {
+    const nRows = matrix.length / nCols;
+    return Array.from({ length: nRows }, (_, r) =>
+        Array.from({ length: nCols }, (_, c) => matrix[c * nRows + r])
+    );
+}
+
+function shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+}
+
+const nKeep = (nBlocks*seriesLength)
+
+function reshapeAndSample(matrix, nCols, nKeep) {
+    const rows = reshapeMatrix(matrix, nCols);
+    if (nKeep > rows.length) throw new Error(`Only ${rows.length} rows available`);
+    return shuffle(rows).slice(0, nKeep);
+}
+
+function sizeToViewport(trial) {
+  const w = window.innerWidth, h = window.innerHeight;
+  trial.canvas_width  = w;
+  trial.canvas_height = h;
+  if (trial.stimuli?.[0]?.obj_type === 'rect') {
+    trial.stimuli[0].width  = w;
+    trial.stimuli[0].height = h;
+  }
+}
+
+/* ==================================================================== *
+ *  SOURCE IMAGES + LAB CACHE                                           *
+ * ==================================================================== */
+
+const srcFileFor = new Map();     // id -> filename within SRC_ROOT
+const srcBitmaps = new Map();     // id -> ImageData (straight alpha)
+const labCache   = new Map();     // id -> LabStim  (insertion-ordered LRU)
+
+/*
+ * SRC_EXT was declared and then never used, so ids without an extension
+ * resolved to a 404. Append it only when the id has no extension of its own.
+ */
+function srcUrl(id) {
+  const file = srcFileFor.get(id) || String(id);
+  return `${SRC_ROOT}/${/\.\w{2,4}$/.test(file) ? file : file + SRC_EXT}`;
+}
+
+function decodeToImageData(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      // willReadFrequently keeps the readback on the CPU path; srgb stops the
+      // browser colour-managing the decode out from under us.
+      const ctx = c.getContext('2d', { willReadFrequently: true, colorSpace: 'srgb' });
+      ctx.drawImage(img, 0, 0);
+      resolve(ctx.getImageData(0, 0, c.width, c.height));
+    };
+    img.onerror = () => reject(new Error(`Could not load source image: ${url}`));
+    img.src = url;
+  });
+}
+
+// Pre-load all the images in a block
+// To be called upon during breaks
+async function preloadSources(ids, onProgress) {
+  let done = 0;
+  const CONCURRENCY = 8;
+  let next = 0;
+  const worker = async () => {
+    while (next < ids.length) {
+      const id = ids[next++];
+      if (!srcBitmaps.has(id)) srcBitmaps.set(id, await decodeToImageData(srcUrl(id)));
+      onProgress(++done, ids.length);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, ids.length) }, worker));
+}
+
+function getLab(id) {
+  let st = labCache.get(id);
+  if (st) { labCache.delete(id); labCache.set(id, st); return st; }   // refresh LRU
+
+  const data = srcBitmaps.get(id);
+  if (!data) throw new Error(`No source bitmap decoded for "${id}"`);
+  st = new LabStim(data.data, data.width, data.height);
+  labCache.set(id, st);
+
+  while (labCache.size > LAB_CACHE) {
+    const oldest = labCache.keys().next().value;
+    labCache.delete(oldest);
+  }
+  return st;
+}
+
+// Image rendering function
+const scratchFor = new WeakMap();
+
+/*
+ * The cache key must be the hue that was actually rendered. Comparing against
+ * `theta` while storing `theta + randomRotate` meant the guard never matched,
+ * so every frame re-rendered, and one cursor position per trial silently kept
+ * a stale frame on screen.
+ */
+function drawStim(ctx, stim, theta, cx, cy, scale, randomRotate) {
+  let s = scratchFor.get(stim);
+  if (!s) {
+    const c = document.createElement('canvas');
+    c.width = stim.width; c.height = stim.height;
+    s = { canvas: c, ctx: c.getContext('2d', { colorSpace: 'srgb' }),
+          img: new ImageData(stim.out, stim.width, stim.height), hue: null };
+    scratchFor.set(stim, s);
+  }
+  const hue = mod(Number(theta) + Number(randomRotate || 0), 360);
+  if (s.hue !== hue) {
+    stim.render(hue);
+    s.ctx.putImageData(s.img, 0, 0);
+    s.hue = hue;
+  }
+  const w = stim.width * scale, h = stim.height * scale;
+  ctx.drawImage(s.canvas, cx - w / 2, cy - h / 2, w, h);
+}
+
+/*
+ * ACHROMATIC (pre-response) VERSION OF A STIMULUS.
+ *
+ * The previous implementation called stim.render(0). A rotation of zero
+ * degrees leaves the a*b* plane untouched, so it returned the source image at
+ * full chroma. The pre-response frame was therefore a fully coloured object,
+ * which is exactly what the grey frame exists to prevent.
+ *
+ * Zeroing a* and b* while keeping L* gives a true neutral that is
+ * lightness-matched, pixel for pixel, to every rotated version of the same
+ * image. The switch to colour on the first cursor movement then changes hue
+ * and chroma only, with no brightness step to cue the participant.
+ *
+ * The grey image never varies, so it is built once per LabStim and cached for
+ * the lifetime of that object. It must NOT be written into stim.out: that
+ * buffer is shared with the colour path's ImageData and guarded by
+ * stim.lastTheta, so overwriting it would corrupt the next coloured frame.
+ */
+const greyFor = new WeakMap();
+
+function greyCanvasFor(stim) {
+  let g = greyFor.get(stim);
+  if (g) return g;
+
+  if (typeof labToRgb255 !== 'function') {
+    throw new Error('labToRgb255 is undefined: labrotate.js failed to load, ' +
+                    'or a cached older copy is being served.');
+  }
+
+  const c = document.createElement('canvas');
+  c.width = stim.width; c.height = stim.height;
+  const cctx = c.getContext('2d', { colorSpace: 'srgb' });
+
+  const buf   = new Uint8ClampedArray(stim.n * 4);
+  const idx   = stim.idx, L = stim.L, alpha = stim.alpha;
+
+  /*
+   * With a* = b* = 0 the output depends on L* alone, so quantise L* and
+   * memoise. An object bitmap has tens of thousands of visible pixels but
+   * only a few hundred distinct lightness levels at 0.05 L* resolution, which
+   * is far finer than the 8-bit output can resolve.
+   */
+  const lut = new Map();
+  for (let k = 0; k < idx.length; k++) {
+    const p   = idx[k];
+    const key = Math.round(L[p] * 20);
+    let rgb = lut.get(key);
+    if (!rgb) { rgb = labToRgb255(key / 20, 0, 0); lut.set(key, rgb); }
+    const o = p << 2;
+    buf[o] = rgb[0]; buf[o + 1] = rgb[1]; buf[o + 2] = rgb[2];
+  }
+  // Alpha copied for every pixel, including the fully transparent ones that
+  // are skipped above, so the cut-out matches the coloured path exactly.
+  for (let p = 0; p < stim.n; p++) buf[(p << 2) + 3] = alpha[p];
+
+  cctx.putImageData(new ImageData(buf, stim.width, stim.height), 0, 0);
+
+  g = { canvas: c };
+  greyFor.set(stim, g);
+  return g;
+}
+
+function drawStimGrey(ctx, stim, cx, cy, scale) {
+  const g = greyCanvasFor(stim);
+  const w = stim.width * scale, h = stim.height * scale;
+  ctx.drawImage(g.canvas, cx - w / 2, cy - h / 2, w, h);
+}
+
+
+/*
+ * A short line across the ring, perpendicular to it, at wheel position
+ * `theta`. Used both for the live cursor marker and, on training trials, for
+ * the correct-answer marker on the feedback screen. Because it is placed with
+ * angleFromTheta, it sits exactly where the cursor would have had to be to
+ * produce that theta.
+ */
+function drawTick(ctx, cx, cy, theta, color, halfLen, width) {
+  const rad = angleFromTheta(Number(theta)) * Math.PI / 180;
+  const ux = Math.cos(rad), uy = -Math.sin(rad);       // y down on canvas
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = width;
+  ctx.lineCap     = 'round';
+  ctx.beginPath();
+  ctx.moveTo(cx + ux * (CIRCLE_R - halfLen), cy + uy * (CIRCLE_R - halfLen));
+  ctx.lineTo(cx + ux * (CIRCLE_R + halfLen), cy + uy * (CIRCLE_R + halfLen));
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawWheel(ctx, cx, cy, currentTheta) {
+  ctx.save();
+
+  ctx.strokeStyle = CIRCLE_COLOR;
+  ctx.lineWidth   = CIRCLE_LINE_W;
+  ctx.beginPath();
+  ctx.arc(cx, cy, CIRCLE_R, 0, 2 * Math.PI);
+  ctx.stroke();
+
+  ctx.restore();
+
+  if (WHEEL_MARKER && currentTheta != null && Number.isFinite(Number(currentTheta))) {
+    drawTick(ctx, cx, cy, currentTheta, MARKER_COLOR, MARKER_LEN, CIRCLE_LINE_W);
+  }
+}
+
+
+// Dynamically track where the mouse is to rotate the color of the probe object
+
+/*
+ * The candidate per-trial rotations. Drawn from in test.on_start, with the
+ * immediately preceding trial's value excluded so that the same offset is
+ * never used twice in a row.
+ */
+const ROTATION_SET = [45, 90, 135, 180, 225, 270, 315];
+
+const wheel = {
+  angle: null, radius: null,
+  theta: null,          // cursor position in wheel space
+  clickTheta: null,     // theta frozen at the moment of the click
+  randomRotation: 0,    // per-trial offset between wheel space and hue
+  prevRotation: null,   // previous trial's offset, excluded from the next draw
+  targetHue: null,
+  cx: null, cy: null,   // drawing-unit centre, for the click cross-check
+  stim: null, detach: null,
+
+  // Timing. t0 is set when the tracker attaches, i.e. at test-canvas onset.
+  // firstMove and clickTime are absolute performance.now() stamps; the
+  // differences are what get logged.
+  t0: null, firstMove: null, clickTime: null
+};
+
+/*
+ * Snapshot of the most recent test response, written at the end of
+ * test.on_finish (before the wheel state is reset) and read by the training
+ * feedback screen that follows it.
+ */
+const lastFeedback = {
+  stim: null, responded: false,
+  respTheta: null, targetTheta: null, rotation: 0, absError: null
+};
+
+/*
+ * Set at the end of every test trial and read by the conditional node that
+ * gates the main-phase timeout warning. Kept separate from lastFeedback so
+ * the warning does not depend on anything the feedback screen may reset.
+ */
+let lastTimedOut = false;
+
+function attachTracker() {
+  // A previous trial that ended abnormally can leave its listeners bound.
+  if (wheel.detach) { wheel.detach(); wheel.detach = null; }
+
+  wheel.t0        = performance.now();
+  wheel.firstMove = null;
+  wheel.clickTime = null;
+
+  const canvas = document.querySelector('canvas');
+  if (!canvas) { console.warn('attachTracker: no canvas found'); return; }
+
+  const g = drawingBox(canvas, canvas.getContext('2d'));
+  const box = canvas.getBoundingClientRect();
+
+  // client px -> drawing units. One uniform factor, not separate x and y:
+  // a non-uniform scale would distort the cursor angle and therefore the hue.
+  const k = g.w / box.width;
+  if (Math.abs(k - g.h / box.height) > 0.01) {
+    console.warn('Canvas layout aspect differs from its drawing aspect; ' +
+                 'cursor angles will be skewed. Check the canvas CSS.');
+  }
+
+  const cx = box.left + box.width / 2, cy = box.top + box.height / 2;
+
+  // Centre in drawing units, so on_finish can convert click_x / click_y
+  // (which are canvas-relative, not centre-relative) into an angle.
+  wheel.cx = g.cx;
+  wheel.cy = g.cy;
+
+  function onMove(e) {
+    // Stamped before the ring guard, so move onset means the first physical
+    // movement, not the first movement that happened to land in the annulus.
+    if (wheel.firstMove == null) wheel.firstMove = performance.now();
+
+    const x =  (e.clientX - cx) * k;
+    const y = -(e.clientY - cy) * k;
+    wheel.radius = Math.hypot(x, y);
+    wheel.angle  = mod(Math.atan2(y, x) * 180 / Math.PI, 360);
+    if (REQUIRE_INSIDE_RING && (wheel.radius < RING_INNER || wheel.radius > RING_OUTER)) return;
+    wheel.theta = thetaFromAngle(wheel.angle);
+  }
+
+  // Freeze the response at the instant of the click. wheel.theta is what
+  // actually drove the rendered hue, so it is the response, not a
+  // reconstruction from click coordinates.
+  function onDown(e) {
+    onMove(e);
+    wheel.clickTheta = wheel.theta;
+    wheel.clickTime  = performance.now();
+  }
+
+  canvas.addEventListener('pointermove', onMove);
+  canvas.addEventListener('pointerdown', onDown);
+  wheel.detach = () => {
+    canvas.removeEventListener('pointermove', onMove);
+    canvas.removeEventListener('pointerdown', onDown);
+  };
+}
+
+/* ==================================================================== *
+ *  DATA SAVING                                                         *
+ * ==================================================================== */
+
+let savedRows = 0;
+
+/*
+ * INDEPENDENT TRIAL LOG.
+ *
+ * jsPsych 8.3.0 + psychophysics 5.1.0 were dropping keys between the plugin's
+ * trial_data and the stored row: response_type and key_press came out blank
+ * even though the plugin writes them unconditionally and response_type has a
+ * hard default of "key". Anything added via the trial-level `data` parameter
+ * or in on_finish went the same way, while rt survived.
+ *
+ * Rather than depend on that pipeline for the dependent variables, every test
+ * trial appends a fully-formed row here. This array is the source of truth for
+ * the analysis file; jsPsych's own record is still written alongside it as a
+ * secondary sheet in the final file.
+ *
+ * Note on empty cells in the jsPsych CSV: its writer maps `undefined` to an
+ * empty string and `null` to the text "null", and it builds columns from the
+ * union of keys across all rows. So a header with an entirely blank column
+ * means the key exists somewhere but is undefined, not that it is null.
+ */
+const trialRows = [];
+
+// Fixed column order, so the file is stable even if a trial errors early.
+const ROW_COLUMNS = [
+  'participant_id', 'session', 'cond_number','timestamp',
+  'block', 'trialCount', 'training', 'trial_index',
+  'rep', 'cond_context', 'context_color', 'cond_theta',
+  'probe', 'probe_stim', 'stim_names', 'study_colors',
+  'target_hue', 'rotation', 'target_theta',
+  'raw_angle', 'adjusted_angle', 'response_hue',
+  'angular_error', 'abs_angular_error',
+  'responded', 'timed_out',
+  'rt', 'move_onset', 'click_rt', 'movement_time',
+  'cursor_angle', 'cursor_radius',
+  'click_x', 'click_y', 'click_theta', 'click_radius',
+  'screen_w', 'screen_h', 'dpr'
+];
+
+/*
+ * Cell typing for the xlsx writer.
+ *
+ * A CSV carries no type information, so Excel guesses from the text and from
+ * your system locale. On a tr-TR Mac the decimal separator is a comma, which
+ * is why the delimiter has to be set by hand and why anything shaped like
+ * 2.1.0 or 3-5 comes back as a date. Writing an xlsx removes the guessing:
+ * numbers are stored as numbers.
+ */
+const TEXT_COLUMNS = new Set([
+  'participant_id', 'session', 'timestamp', 'context_color',
+  'probe_stim', 'stim_names', 'study_colors'
+]);
+
+const BOOL_COLUMNS = new Set(['training', 'responded', 'timed_out']);
+
+// performance.now() differences carry ~10 meaningless decimals. Round at the
+// point of writing rather than leaving 1431.2999999999997 in the sheet.
+const DECIMALS = {
+  rt: 1, move_onset: 1, click_rt: 1, movement_time: 1,
+  angular_error: 2, abs_angular_error: 2,
+  raw_angle: 2, adjusted_angle: 2, response_hue: 2,
+  target_hue: 2, target_theta: 2,
+  cursor_angle: 2, cursor_radius: 1,
+  click_x: 1, click_y: 1, click_theta: 2, click_radius: 1,
+  dpr: 2
+};
+
+// null becomes a genuinely empty cell, which reads as NA in R and as NaN in
+// pandas. The string "null" would read as text and poison the column's type.
+function cellValue(col, v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (BOOL_COLUMNS.has(col)) return Boolean(v);
+  if (TEXT_COLUMNS.has(col)) return String(v);
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  const d = DECIMALS[col];
+  return d == null ? n : Number(n.toFixed(d));
+}
+
+/*
+ * Builds the workbook for a given set of rows. `jsPsych` is optional: block
+ * uploads pass only their rows and get the 'trials' and 'session' sheets; the
+ * final upload also passes jsPsych and gets the 'jspsych_raw' sheet as well.
+ */
+function buildWorkbook(rows, jsPsych = null) {
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: the analysis rows, one per test trial.
+  const aoa = [ROW_COLUMNS.slice()];
+  for (const r of rows) aoa.push(ROW_COLUMNS.map(c => cellValue(c, r[c])));
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = ROW_COLUMNS.map(c => ({ wch: Math.max(11, c.length + 2) }));
+  XLSX.utils.book_append_sheet(wb, ws, 'trials');
+
+  // Sheet 2: session-level facts that would otherwise be repeated on every
+  // row. The user agent in particular is long and full of commas.
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+    ['field', 'value'],
+    ['participant_id', PARTICIPANT_ID],
+    ['session', SESSION_ID],
+    ['study_id', STUDY_ID],
+    ['cond_number', COND_NUMBER],
+    ['cond_source', COND_SOURCE],
+    ['start_context', Number(startContext)],
+    ['n_trials_logged', rows.length],
+    ['n_trials_expected', nTrials],
+    ['n_training', Math.min(N_TRAINING, nTrials)],
+    ['n_blocks', nBlocks],
+    ['block_size', BLOCK_SIZE],
+    ['screen_w', window.innerWidth],
+    ['screen_h', window.innerHeight],
+    ['dpr', window.devicePixelRatio || 1],
+    ['saved_at', new Date().toISOString()],
+    ['user_agent', navigator.userAgent]
+  ]), 'session');
+
+  // Sheet 3: jsPsych's own record, every cell written as text so nothing gets
+  // reinterpreted. Kept for auditing, not for analysis. Final file only.
+  if (jsPsych) {
+    try {
+      const raw = jsPsych.data.get().values();
+      const cols = [...new Set(raw.flatMap(r => Object.keys(r)))];
+      const rawAoa = [cols];
+      for (const r of raw) {
+        rawAoa.push(cols.map(c => {
+          const v = r[c];
+          if (v === null || v === undefined) return null;
+          return typeof v === 'object' ? JSON.stringify(v) : String(v);
+        }));
+      }
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rawAoa), 'jspsych_raw');
+    } catch (e) {
+      console.warn('raw sheet skipped:', e);
+    }
+  }
+
+  return wb;
+}
+
+// Quote every field and flatten newlines. Only used if SheetJS is unavailable.
+function toCsv(rows, columns) {
+  const esc = v => (v === null || v === undefined)
+    ? '""'
+    : '"' + String(v).replace(/\r?\n/g, ' ').replace(/"/g, '""') + '"';
+  const lines = [columns.map(esc).join(',')];
+  for (const r of rows) lines.push(columns.map(c => esc(r[c])).join(','));
+  return lines.join('\r\n') + '\r\n';
+}
+
+function downloadText(text, filename, mime) {
+  try {
+    const blob = new Blob([text], { type: mime });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch (e) {
+    console.error(`download of ${filename} failed:`, e);
+  }
+}
+
+/*
+ * Uploads rows to OSF through DataPipe.
+ *
+ * Normally the rows are written as an .xlsx workbook and sent, base64-encoded,
+ * to DataPipe's base64 endpoint (base64 data collection must be enabled for
+ * the experiment on pipe.jspsych.org). If SheetJS failed to load or the build
+ * throws, the same rows go to the plain-text endpoint as CSV instead, so a
+ * participant's data is never lost over a file format.
+ *
+ * DataPipe refuses to overwrite an existing file, so every call must use a
+ * unique filename: participant + session + tag (training, block1, ..., final).
+ */
+async function postRows(rows, tag, jsPsych = null) {
+  if (!DATAPIPE_ID || !rows.length) return { ok: false, skipped: true };
+
+  const base = `${PARTICIPANT_ID}_${SESSION_ID}_${tag}`;
+  let endpoint, filename, data;
+  try {
+    data = XLSX.write(buildWorkbook(rows, jsPsych),
+                      { type: 'base64', bookType: 'xlsx', compression: true });
+    endpoint = 'https://pipe.jspsych.org/api/base64/';
+    filename = `${base}.xlsx`;
+  } catch (e) {
+    console.warn('xlsx build failed, sending CSV instead:', e);
+    data = toCsv(rows, ROW_COLUMNS);
+    endpoint = 'https://pipe.jspsych.org/api/data/';
+    filename = `${base}.csv`;
+  }
+
+  const body = JSON.stringify({ experimentID: DATAPIPE_ID, filename, data });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: '*/*' },
+        body
+      });
+      if (res.ok) return { ok: true };
+      console.warn(`save "${tag}" HTTP ${res.status} (attempt ${attempt + 1})`);
+    } catch (e) {
+      console.warn(`save "${tag}" failed (attempt ${attempt + 1}):`, e.message);
+    }
+    await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+  }
+  return { ok: false };
+}
+
+// Ships only rows not sent yet, so a dropout still leaves everything up to
+// the last completed block on the server.
+async function saveIncremental(tag) {
+  const fresh = trialRows.slice(savedRows);
+  if (!fresh.length) return;
+  const res = await postRows(fresh, tag);
+  if (res.ok) savedRows = trialRows.length;
+}
+
+/*
+ * Last-resort local download, used only if the final upload fails. Writes one
+ * .xlsx with three sheets, or a CSV if SheetJS failed to load or the write
+ * threw, because a participant finishing with no file at all is the one
+ * outcome worth avoiding.
+ */
+function saveDataFile(jsPsych) {
+  const stamp = `${PARTICIPANT_ID}_s${SESSION_ID}_${Date.now()}`;
+
+  if (typeof XLSX === 'undefined') {
+    console.warn('SheetJS did not load; writing CSV instead.');
+    downloadText(toCsv(trialRows, ROW_COLUMNS), `${stamp}_trials.csv`, 'text/csv');
+    return;
+  }
+  try {
+    XLSX.writeFile(buildWorkbook(trialRows, jsPsych), `${stamp}.xlsx`, { compression: true });
+  } catch (e) {
+    console.error('xlsx write failed; writing CSV instead:', e);
+    downloadText(toCsv(trialRows, ROW_COLUMNS), `${stamp}_trials.csv`, 'text/csv');
+  }
+}
+
+// EXPERIMENT SCRIPT
+
+async function runExperiment() {
+
+  // Upload the full dataset at the end, then send the participant back to Prolific
+  const jsPsych = initJsPsych({
+    on_finish: async function () {
+      showLoading('Saving your data. Please do not exit.\u2026');
+      const res = await postRows(trialRows, 'final', jsPsych);
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      if (res.ok) {
+        showLoading('Data saved. Returning you to Prolific\u2026');
+        setTimeout(() => {
+          location.href = `https://app.prolific.com/submissions/complete?cc=${PROLIFIC_CC}`;
+        }, 1500);
+      } else {
+        if (DOWNLOAD_LOCAL_FALLBACK) saveDataFile(jsPsych);
+        showLoading('We could not upload your data. A file has been downloaded; ' +
+                    `please send it to us via Prolific messages. Code: ${PROLIFIC_CC_FAIL}`);
+      }
+    }
+  });
+
+  // Save data at the beginning of each trial
+  jsPsych.data.addProperties({
+    participant_id: PARTICIPANT_ID,
+    session: SESSION_ID,
+    study_id: STUDY_ID,
+    start_context: startContext,
+    screen_w: window.innerWidth,
+    screen_h: window.innerHeight,
+    dpr: window.devicePixelRatio || 1,
+    ua: navigator.userAgent
+  });
+
+  showLoading('Loading condition files\u2026');
+  const assigned = await assignCondition();
+  COND_NUMBER = assigned.index + 1;
+  COND_SOURCE = assigned.source;
+  jsPsych.data.addProperties({ cond_number: COND_NUMBER, cond_source: COND_SOURCE });
+
+
+  // Check r.ok: a missing file on GitHub Pages returns an HTML 404 page, and
+  // r.json() would otherwise fail with a confusing parse error.
+  const fetchJson = async url => {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`Could not load ${url} (HTTP ${r.status})`);
+    return r.json();
+  };
+
+  const urls = conditionUrls(assigned.index);
+  const [conditionMatrix, flatImageMatrix] = await Promise.all([
+    fetchJson(urls.cond),
+    fetchJson(urls.image)
+  ]);
+
+  /*
+   * The condition matrix comes out of MATLAB's jsonencode as a bare array of
+   * rows, so the first trial lives at index 0. The previous hard-coded
+   * `startRow = 1` skipped it: trial 1 was served row 2's rep/context/probe,
+   * trial 2 got row 3's, and so on for the whole session. That is the source
+   * of the 2,3,4,5,6,1 cycle in the rep column instead of 1,2,3,4,5,6.
+   *
+   * MATLAB uses 1-based indexing and JavaScript does not, but that difference
+   * lives entirely on the MATLAB side of the export; once the array is here,
+   * row 0 is the first trial. No compensating offset belongs in this file.
+   *
+   * Detect a header rather than assuming one, so this cannot drift again if
+   * the export format changes: a data row is entirely numeric.
+   */
+  const isNumericCell = v =>
+    typeof v === 'number' ? Number.isFinite(v)
+    : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v));
+
+  const looksLikeData = row => Array.isArray(row) && row.length > 0 && row.every(isNumericCell);
+
+  const startRow = looksLikeData(conditionMatrix[0]) ? 0 : 1;
+  if (startRow === 1) {
+    console.warn('conditionMatrix: first row is not fully numeric, treating it as a header:',
+                 conditionMatrix[0]);
+  }
+  if (conditionMatrix.length - startRow < nTrials) {
+    throw new Error(`conditionMatrix has ${conditionMatrix.length - startRow} usable rows, ` +
+                    `need ${nTrials} (${N_TRAINING} practice + ${nBlocks} x ${BLOCK_SIZE} main)`);
+  }
+
+  // Unfold the flattened matrix
+  const imageMatrix = reshapeMatrix(flatImageMatrix, nCols);
+
+  // Extract the contents of the condition matrix
+  const timelineVars = conditionMatrix.slice(startRow, startRow+nTrials).map((row, i) => {
+
+    // Drop the theta column before destructuring if the file has one, so the
+    // names below always line up with the values.
+    const cols = COND_HAS_THETA_COL ? row.slice(0, 5).concat(row.slice(6)) : row;
+    const condTheta = COND_HAS_THETA_COL ? row[5] : null;
+
+    const [rep, context, rep1color, novel, probe,
+            pos1x, pos1y, pos3x, pos3y, stimID1, stimID3] = cols;
+
+    // Also get the stimulus names
+    const [rep1, novelStim] = imageMatrix[i];
+
+    return {
+        /*
+         * Practice trials are block 0 and are excluded from the block
+         * averages on the break screen; main trials are numbered 1..nBlocks
+         * from the first post-practice trial, so trial N_TRAINING+1 is the
+         * first trial of block 1. Numbering off `i` alone, as the previous
+         * version did, put the practice trials inside block 1 and left it 12
+         * main trials short.
+         */
+        block: i < N_TRAINING ? 0 : Math.floor((i - N_TRAINING) / BLOCK_SIZE) + 1,
+        rep, context,
+        condTheta,
+        colors: [rep1color, novel],
+        probe,
+        positions: [
+        { x: pos1x, y: pos1y },
+        { x: pos3x, y: pos3y }
+        ],
+        trialCount: i + 1,
+        isTraining: i < N_TRAINING,     // the first N_TRAINING trials are practice
+        stimNames: [rep1, novelStim],
+        stimIDs: [stimID1, stimID3],
+    };
+    });
+
+  const allIds = [...new Set(timelineVars.flatMap(v => v.stimNames))];
+  // Preload all the images in the stimulus pool, show loading progress on screen & await until done
+
+  showLoading('Loading stimuli\u2026', 0);
+  await preloadSources(allIds, (n, total) => {
+    showLoading(`Loading stimuli\u2026 ${n}/${total}`, n / total);
+  });
+
+  /*
+   * Chop the entire events list into chunks. The practice trials form chunk 0
+   * (when N_TRAINING > 0) and each subsequent chunk is exactly BLOCK_SIZE
+   * main trials, so chunk k holds block k - N_LEAD + 1.
+   *
+   * The old loop stepped by nTrials/nBlocks from index 0, which was fractional
+   * and swallowed the practice trials into the first block.
+   */
+  const blocks = [];
+  if (N_LEAD) blocks.push(timelineVars.slice(0, N_TRAINING));
+  for (let i = N_TRAINING; i < timelineVars.length; i += BLOCK_SIZE) {
+    blocks.push(timelineVars.slice(i, i + BLOCK_SIZE));
+  }
+
+  // Chunk 0 is practice when N_LEAD is 1; everything after it is a real block.
+  const isPracticeChunk = k => N_LEAD === 1 && k === 0;
+  const blockNumberOf   = k => k - N_LEAD + 1;
+
+
+  // This is important. We convert the colors of all the images within a given block beforehand for speed.
+  // Thus, the rotated variants of each study image is precomputed for the color wheel at the start of each block.
+  function blockPrep(k) {
+    // Label off the block number, not the chunk index: with practice sitting
+    // in chunk 0, `k + 1` would have counted up to "block 12 of 11".
+    const label = isPracticeChunk(k)
+      ? 'Preparing the practice trials\u2026'
+      : `Preparing block ${blockNumberOf(k)} of ${nBlocks}\u2026`;
+
+    return {
+      type: jsPsychCallFunction,
+      async: true,
+      func: function (done) {
+        const ids = [...new Set(blocks[k].flatMap(v => v.stimNames))];
+        showLoading(label, 0);
+        let n = 0;
+        const step = () => {
+          if (n < ids.length) {
+            getLab(ids[n++]);
+            showLoading(label, n / ids.length);
+            setTimeout(step, 0);              // yield so the bar actually paints
+          } else {
+            hideLoading();
+            done();
+          }
+        };
+        step();
+      }
+    };
+  }
+
+  function blockSave(k) {
+    const practice = isPracticeChunk(k);
+    const blockNum = blockNumberOf(k);
+    // Upload tag, and therefore the DataPipe filename. Tagged off the block
+    // number so block3.xlsx really is block 3.
+    const tag   = practice ? 'training' : `block${blockNum}`;
+    const label = practice ? 'practice' : `block ${blockNum}`;
+
+    return {
+      type: jsPsychCallFunction,
+      async: true,
+      func: function (done) {
+        done();                                  // never block the participant
+        try {
+          localStorage.setItem(
+            `ipw_${PARTICIPANT_ID}_s${SESSION_ID}`,
+            JSON.stringify({ savedAt: Date.now(), block: practice ? 0 : blockNum, rows: trialRows })
+          );
+        } catch (e) {
+          console.warn('local backup failed:', e);   // quota / private mode
+        }
+        console.log(`${label} complete: ${trialRows.length} test rows logged`);
+        if (SAVE_BLOCKS) saveIncremental(tag).catch(console.warn);
+      }
+    };
+  }
+
+  /*
+   * Plain object, not an arrow function. Assigning properties onto a function
+   * happens to work, but it made the declared shape a lie and hid the fact
+   * that probeName and wheelRef were never populated.
+   */
+  const trialState = {
+    stims: null, pos: null, colors: null, context: null,
+    probeName: null, stimNames: null, studyColors: null
+  };
+
+const habituation = {
+    type: jsPsychPsychophysics,
+    canvas_width: window.innerWidth,
+    canvas_height: window.innerHeight,
+    background_color: greyBackground,
+    origin_center: false,
+
+    stimuli: {
+        obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+        fill_color: greyBackground, show_start_time: 0
+    },
+    choices: 'NO_KEYS',
+    trial_duration: habituationDuration,
+
+    data: {
+        trial_part: 'habituation',
+        block:      jsPsych.timelineVariable('block'),
+        trialCount: jsPsych.timelineVariable('trialCount'),
+    },
+
+    on_start: function (trial) {
+    sizeToViewport(trial);
+    const trialCount = jsPsych.evaluateTimelineVariable('trialCount');
+
+    // Was previously referenced but never declared here, which threw a
+    // ReferenceError at the bottom of this function.
+    const allItems = jsPsych.evaluateTimelineVariable('stimNames');
+
+    let curContextColor;                      // declared once, in function scope
+    if (trialCount == 1) {
+      curContextColor = contextColors[Number(startContext)];
+    } else {
+      const cmd = jsPsych.evaluateTimelineVariable('context');
+      if (Number(cmd) == 1) {
+        if (trialState.context === 'rgb(165, 127, 151)') {
+          curContextColor = contextColors[1];
+        } else if ((trialState.context === 'rgb(135, 174, 116)')) {
+          curContextColor = contextColors[0];
+        }
+      } else {
+        curContextColor = trialState.context;
+      }
+    }
+
+    trialState.context = curContextColor;
+    trial.stimuli[0].fill_color = curContextColor;
+
+    trialState.stims  = allItems.map(getLab);
+    trialState.pos    = jsPsych.evaluateTimelineVariable('positions');
+    trialState.colors = jsPsych.evaluateTimelineVariable('colors');
+
+    trialState.stimNames   = allItems.join('|');
+    trialState.studyColors = trialState.colors.join('|');
+  },
+};
+
+const study = {
+  type: jsPsychPsychophysics,
+  canvas_width: window.innerWidth,
+  canvas_height: window.innerHeight,
+  background_color: greyBackground,
+  origin_center: false,
+
+  stimuli: [
+    // Background — fill_color gets overwritten in on_start
+    { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+      fill_color: greyBackground, show_start_time: 0 },
+
+    { obj_type: 'manual', show_start_time: 0, show_end_time: STUDY_STIM_MS,
+      drawFunc: function (s, canvas, ctx) {
+        const { cx, cy } = drawingBox(canvas, ctx);
+          drawStim(ctx, trialState.stims[0], trialState.colors[0],
+                   cx + trialState.pos[0].x,
+                   cy + trialState.pos[0].y, imageScale, 0);
+        
+      }
+    }
+  ],
+  choices: 'NO_KEYS',
+  trial_duration: STUDY_MS,
+
+  data: {
+    trial_part: 'study',
+    block:      jsPsych.timelineVariable('block'),
+    trialCount: jsPsych.timelineVariable('trialCount'),
+  },
+
+  on_start: function (trial) {
+    sizeToViewport(trial);
+
+    trialState.context = curContextColor;
+    trial.stimuli[0].fill_color = curContextColor;
+  },
+
+  on_finish: function (data) {
+    data.context_color = trialState.context;
+  }
+};
+
+const study2 = {
+  type: jsPsychPsychophysics,
+  canvas_width: window.innerWidth,
+  canvas_height: window.innerHeight,
+  background_color: greyBackground,
+  origin_center: false,
+
+  stimuli: [
+    // Background — fill_color gets overwritten in on_start
+    { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+      fill_color: greyBackground, show_start_time: 0 },
+
+    { obj_type: 'manual', show_start_time: 0, show_end_time: STUDY_STIM_MS,
+      drawFunc: function (s, canvas, ctx) {
+        const { cx, cy } = drawingBox(canvas, ctx);
+        drawStim(ctx, trialState.stims[1], trialState.colors[1],
+                cx + trialState.pos[1].x,
+                cy + trialState.pos[1].y, imageScale, 0);
+      }
+    }
+  ],
+  choices: 'NO_KEYS',
+  trial_duration: STUDY_MS,
+
+  data: {
+    trial_part: 'study',
+    block:      jsPsych.timelineVariable('block'),
+    trialCount: jsPsych.timelineVariable('trialCount'),
+  },
+
+  on_start: function (trial) {
+    sizeToViewport(trial);
+    const trialCount = jsPsych.evaluateTimelineVariable('trialCount');
+
+    // Was previously referenced but never declared here, which threw a
+    // ReferenceError at the bottom of this function.
+    const allItems = jsPsych.evaluateTimelineVariable('stimNames');
+
+    trialState.context = curContextColor;
+    trial.stimuli[0].fill_color = curContextColor;
+
+    trialState.stims  = allItems.map(getLab);
+    trialState.pos    = jsPsych.evaluateTimelineVariable('positions');
+    trialState.colors = jsPsych.evaluateTimelineVariable('colors');
+
+    trialState.stimNames   = allItems.join('|');
+    trialState.studyColors = trialState.colors.join('|');
+  },
+
+  /*
+   * Everything else that used to be written here now goes on the test row.
+   * blockSave and saveIncremental both filter to trial_part === 'test', so
+   * anything attached to a study row was collected and then thrown away.
+   */
+  on_finish: function (data) {
+    data.context_color = trialState.context;
+  }
+};
+
+  // Testing stage
+  const test = {
+    type: jsPsychPsychophysics,
+    canvas_width: window.innerWidth,
+    canvas_height: window.innerHeight,
+    background_color: greyBackground,
+    origin_center: false,
+
+    stimuli: [
+      // Background — fill_color gets overwritten in on_start
+    { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+      fill_color: greyBackground, show_start_time: 0 },
+      {
+        obj_type: 'manual',
+        show_start_time: 0,
+        show_end_time: TEST_STIM_MS, // Maximum allowed test duration
+
+        drawFunc: function (s, canvas, ctx) {
+          const { cx, cy } = drawingBox(canvas, ctx);
+          if (!wheel.stim) return;
+
+          /*
+           * Before the cursor has moved, theta is null: draw the ring with no
+           * marker and the stimulus with its chroma stripped out. The first
+           * pointermove sets theta and the else branch takes over, so the hue
+           * then tracks the cursor for the rest of the trial. Exactly one of
+           * the two branches runs, so the grey frame is never overpainted.
+           */
+          if (wheel.theta == null) {
+            drawWheel(ctx, cx, cy, null);
+            drawStimGrey(ctx, wheel.stim, cx, cy, imageScale);
+          } else {
+            drawWheel(ctx, cx, cy, wheel.theta);
+            drawStim(ctx, wheel.stim, wheel.theta, cx, cy, imageScale, wheel.randomRotation);
+          }
+        }
+      }
+    ],
+    response_type: 'mouse', // Allow a mouse click to end testing
+    response_start_time: 0,
+    trial_duration: TEST_MS,
+
+    data: {
+      trial_part: 'test',
+      block:        jsPsych.timelineVariable('block'),
+      trialCount:   jsPsych.timelineVariable('trialCount'),
+      training:     jsPsych.timelineVariable('isTraining'),
+      rep:          jsPsych.timelineVariable('rep'),
+      cond_context: jsPsych.timelineVariable('context'),
+      probe:        jsPsych.timelineVariable('probe'),
+      
+      cond_theta:   jsPsych.timelineVariable('condTheta'),
+    },
+
+    on_start: function (trial) {
+      sizeToViewport(trial);
+      const allItems = jsPsych.evaluateTimelineVariable('stimNames');
+      const probeStimIndex = jsPsych.evaluateTimelineVariable('probe');
+      const probeStimName = allItems[Number(probeStimIndex-1)];
+
+
+      // Was read in on_finish but never assigned, so probe_stim was undefined.
+      trialState.probeName = probeStimName;
+     
+      /*
+       * Read the timeline variables here and keep them, instead of relying on
+       * the trial-level `data` parameter, which is where block / trialCount /
+       * trial_part were being lost. evaluateTimelineVariable demonstrably
+       * works in on_start: it is what already drives the context colour and
+       * the stimulus selection.
+       */
+      trialState.block       = jsPsych.evaluateTimelineVariable('block');
+      trialState.trialCount  = jsPsych.evaluateTimelineVariable('trialCount');
+      trialState.isTraining  = jsPsych.evaluateTimelineVariable('isTraining');
+      trialState.rep         = jsPsych.evaluateTimelineVariable('rep');
+      trialState.condContext = jsPsych.evaluateTimelineVariable('context');
+      trialState.condTheta   = jsPsych.evaluateTimelineVariable('condTheta');
+      trialState.probeIndex  = probeStimIndex;
+
+      /*
+       * Draw the per-trial offset, excluding whatever was used on the
+       * preceding trial so that no rotation repeats back to back. Filtering
+       * the pool rather than resampling until the value differs keeps this
+       * bounded: one draw, always, from the 6 remaining candidates. Each of
+       * those 6 stays equally likely, so marginal frequencies over the block
+       * remain flat apart from the repeat exclusion itself.
+       *
+       * prevRotation is null on the very first trial, so nothing is filtered
+       * out there and all 7 are in play.
+       */
+      const randomRotation = () => {
+        const candidates = ROTATION_SET.filter(r => r !== wheel.prevRotation);
+        return jsPsych.randomization.sampleWithoutReplacement(candidates, 1)[0];
+      };
+      wheel.randomRotation = randomRotation();
+      wheel.prevRotation   = wheel.randomRotation;
+
+      wheel.targetHue = Number(trialState.colors[Number(probeStimIndex - 1)]);
+      trial.stimuli[0].fill_color = trialState.context;
+
+      wheel.stim       = getLab(probeStimName);
+
+      wheel.angle      = null;
+      wheel.radius     = null;
+      wheel.theta      = null;
+      wheel.clickTheta = null;
+      wheel.t0         = null;
+      wheel.firstMove  = null;
+      wheel.clickTime  = null;
+    },
+
+    on_load: function () { attachTracker(); },
+
+    on_finish: function (data) {
+      if (wheel.detach) { wheel.detach(); wheel.detach = null; }
+
+      data.event = 'test';
+
+      /*
+       * Hue and wheel angle live in two spaces separated by the per-trial
+       * offset R:
+       *
+       *     displayed hue = mod(theta + R, 360)          (see drawStim)
+       *
+       * so the reported hue is the clicked theta plus R, and the position the
+       * participant should have clicked is mod(targetHue - R, 360).
+       * WHEEL_OFFSET is already consumed inside thetaFromAngle, so it must not
+       * appear again here.
+       */
+      const R = Number(wheel.randomRotation) || 0;
+
+      /*
+       * Only treat this as a response if a click actually happened. Falling
+       * back to wheel.theta unconditionally meant a timed-out trial in which
+       * the participant merely moved the mouse was scored as a response, at
+       * whatever angle the cursor happened to be resting.
+       *
+       * click_x is NOT a usable witness. psychophysics 5.1.0 initialises its
+       * internal response object as { rt: null, key: null } and then writes
+       *
+       *     click_x: trial.response_type === 'mouse' ? response.clickX - centerX : null
+       *
+       * unconditionally at the end of every mouse trial. With no click,
+       * response.clickX is undefined, so the subtraction yields NaN rather
+       * than null -- and `NaN != null` is true. The old test therefore passed
+       * on EVERY test trial, so any timed-out trial in which the cursor had
+       * moved fell back to wheel.theta and was scored as a response. That is
+       * exactly why the timeout warning appeared only when the probe had
+       * stayed grey: a moved cursor made wheel.theta non-null, data.responded
+       * came out true, and slowWarningIfTimedOut was skipped.
+       *
+       * Kill the NaN sentinel first, so it cannot reach the data file either
+       * (it was also producing NaN click_theta / click_radius below), then
+       * gate on data.rt, which the plugin writes only from mouseDownFunc and
+       * leaves null on a timeout. wheel.clickTheta, set by our own
+       * pointerdown handler, is still preferred because it is the value that
+       * actually drove the rendered hue.
+       */
+      if (!Number.isFinite(data.click_x)) data.click_x = null;
+      if (!Number.isFinite(data.click_y)) data.click_y = null;
+
+      const pluginClicked = data.rt != null && data.click_x != null;
+      const respTheta = (wheel.clickTheta != null) ? wheel.clickTheta
+                      : (pluginClicked ? wheel.theta : null);
+
+      data.rotation      = R;
+      data.rawAngle      = (respTheta == null) ? null : mod(respTheta, 360);
+      data.adjustedAngle = (respTheta == null) ? null : mod(respTheta + R, 360);
+
+      data.response_hue  = data.adjustedAngle;                  // hue reported
+      data.target_hue    = wheel.targetHue;                     // hue at study
+      data.target_theta  = mod(wheel.targetHue - R, 360);       // correct click position
+
+      data.cursor_angle  = wheel.angle;
+      data.cursor_radius = wheel.radius;
+      data.responded     = respTheta != null;
+      data.timed_out     = !data.responded;
+
+      // Accuracy
+      data.angularError    = data.responded
+        ? circDiff(data.response_hue, wheel.targetHue)
+        : null;
+      data.absAngularError = data.angularError == null ? null : Math.abs(data.angularError);
+
+      /*
+       * Timing. Three separate quantities, all relative to tracker attachment
+       * (i.e. test-canvas onset). data.rt from the plugin is a fourth,
+       * independent estimate on its own clock; keep it and cross-check.
+       */
+      data.move_onset    = wheel.firstMove == null ? null : wheel.firstMove - wheel.t0;
+      data.click_rt      = wheel.clickTime == null ? null : wheel.clickTime - wheel.t0;
+      data.movement_time = (wheel.firstMove == null || wheel.clickTime == null)
+                         ? null : wheel.clickTime - wheel.firstMove;
+
+      // Trial identity, moved here from study.on_finish so it survives the
+      // trial_part === 'test' filter in blockSave / saveIncremental.
+      data.context_color = trialState.context;
+      data.probe_stim    = trialState.probeName;
+      data.stim_names    = trialState.stimNames;
+      data.study_colors  = trialState.studyColors;
+
+      /*
+       * Independent cross-check from the click coordinates.
+       *
+       * psychophysics 5.1.0 writes
+       *     click_x: response.clickX - centerX
+       * so click_x / click_y are ALREADY centre-relative. Subtracting
+       * wheel.cx / wheel.cy again, as the previous version did, displaced
+       * every click by one canvas centre and made click_theta meaningless.
+       * Use them as they come.
+       */
+      if (data.click_x != null) {
+        const x =  data.click_x;
+        const y = -data.click_y;                 // canvas y grows downward
+        data.click_theta  = thetaFromAngle(mod(Math.atan2(y, x) * 180 / Math.PI, 360));
+        data.click_radius = Math.hypot(x, y);
+      } else {
+        data.click_theta  = null;
+        data.click_radius = null;
+      }
+
+      /*
+       * Append the analysis row. Everything here is read from trialState and
+       * wheel, both of which are ordinary module-level objects, so nothing on
+       * this row can be lost by jsPsych's result handling.
+       */
+      trialRows.push({
+        participant_id: PARTICIPANT_ID,
+        session:        SESSION_ID,
+        cond_number:    COND_NUMBER,
+        timestamp:      new Date().toISOString(),
+
+        block:        trialState.block,
+        trialCount:   trialState.trialCount,
+        training:     trialState.isTraining,
+        trial_index:  data.trial_index,
+
+        rep:           trialState.rep,
+        cond_context:  trialState.condContext,
+        context_color: trialState.context,
+        cond_theta:    trialState.condTheta,
+
+        probe:        trialState.probeIndex,
+        probe_stim:   trialState.probeName,
+        stim_names:   trialState.stimNames,
+        study_colors: trialState.studyColors,
+
+        target_hue:   wheel.targetHue,
+        rotation:     R,
+        target_theta: data.target_theta,
+
+        raw_angle:      data.rawAngle,
+        adjusted_angle: data.adjustedAngle,
+        response_hue:   data.response_hue,
+
+        angular_error:     data.angularError,
+        abs_angular_error: data.absAngularError,
+
+        responded: data.responded,
+        timed_out: data.timed_out,
+
+        rt:            data.rt,              // the plugin's own clock
+        move_onset:    data.move_onset,
+        click_rt:      data.click_rt,
+        movement_time: data.movement_time,
+
+        cursor_angle:  wheel.angle,
+        cursor_radius: wheel.radius,
+
+        click_x:      data.click_x,
+        click_y:      data.click_y,
+        click_theta:  data.click_theta,
+        click_radius: data.click_radius,
+
+        screen_w: window.innerWidth,
+        screen_h: window.innerHeight,
+        dpr:      window.devicePixelRatio || 1
+      });
+
+      // Hand the response to the feedback screen (training trials only use
+      // it, but it is cheap to record on every trial).
+      lastFeedback.stim        = wheel.stim;
+      lastFeedback.responded   = data.responded;
+      lastFeedback.respTheta   = respTheta;
+      lastFeedback.targetTheta = data.target_theta;
+      lastFeedback.rotation    = R;
+      lastFeedback.absError    = data.absAngularError;
+
+      // Gate for the main-phase timeout warning that may follow this trial.
+      lastTimedOut = !!data.timed_out;
+
+      wheel.theta      = null;
+      wheel.clickTheta = null;
+    }
+  };
+
+  /*
+   * TRAINING FEEDBACK.
+   *
+   * Runs after the test screen on training trials only (see the timeline
+   * below). The probe stays frozen at the colour the participant clicked,
+   * their own marker stays on the ring, a longer white tick marks the correct
+   * position, and the absolute error is printed above the ring. The distance
+   * between the two ticks on the ring is exactly the error in degrees, since
+   * hue and wheel position differ only by the constant per-trial rotation.
+   */
+
+  // Cleaned-up copy of lastFeedback used for drawing this feedback screen
+  let shownFeedback = {};
+
+  const feedback = {
+    type: jsPsychPsychophysics,
+    canvas_width: window.innerWidth,
+    canvas_height: window.innerHeight,
+    background_color: greyBackground,
+    origin_center: false,
+
+    stimuli: [
+      // Background — fill_color gets overwritten in on_start
+      { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+        fill_color: greyBackground, show_start_time: 0 },
+      {
+        obj_type: 'manual',
+        show_start_time: 0,
+        drawFunc: function (s, canvas, ctx) {
+          const { cx, cy } = drawingBox(canvas, ctx);
+          const fb = shownFeedback;            // verified copy, not lastFeedback
+          if (!fb.stim) return;
+
+          // Probe colour:
+          //  - responded: the colour that was on screen at the click
+          //  - timed out: the correct (target) colour, so it can still be learned
+          //  - fallback:  grey, if no valid target angle exists
+          if (fb.responded) {
+            drawStim(ctx, fb.stim, fb.respTheta, cx, cy, imageScale, fb.rotation);
+          } else if (Number.isFinite(fb.targetTheta)) {
+            drawStim(ctx, fb.stim, fb.targetTheta, cx, cy, imageScale, fb.rotation);
+          } else {
+            drawStimGrey(ctx, fb.stim, cx, cy, imageScale);
+          }
+
+          // Ring with the participant's own marker ...
+          drawWheel(ctx, cx, cy, fb.responded ? fb.respTheta : null);
+
+          // ... and the correct position, drawn on top.
+          if (Number.isFinite(fb.targetTheta)) {
+            drawTick(ctx, cx, cy, fb.targetTheta,
+                     FEEDBACK_TARGET_COLOR, FEEDBACK_TARGET_LEN, FEEDBACK_TARGET_W);
+          }
+
+          const msg = (fb.responded && Number.isFinite(fb.absError))
+            ? `Error: ${Math.round(fb.absError)}\u00B0`
+            : 'Please reply quicker!';
+
+          ctx.save();
+          ctx.fillStyle    = FEEDBACK_TEXT_COLOR;
+          ctx.font         = FEEDBACK_FONT;
+          ctx.textAlign    = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText(msg, cx, cy - CIRCLE_R - FEEDBACK_TEXT_GAP);
+          ctx.restore();
+        }
+      }
+    ],
+    choices: 'NO_KEYS',
+    trial_duration: FEEDBACK_MS,
+    data: { trial_part: 'feedback' },
+
+    on_start: function (trial) {
+      sizeToViewport(trial);
+      trial.stimuli[0].fill_color = trialState.context;   // keep the trial's context
+
+      // Check what jsPsych actually recorded for the response trial
+      // (assumes it is the trial immediately before this one).
+      const prev = jsPsych.data.get().last(1).values()[0] || {};
+      const rtRecorded = Object.prototype.hasOwnProperty.call(prev, 'rt');
+      const clicked = rtRecorded
+        ? (prev.rt !== null && prev.rt !== undefined)  // rt is null on timeout
+        : !!lastFeedback.responded;                    // fall back if no rt field
+
+      const responded = clicked && !!lastFeedback.responded &&
+                        Number.isFinite(lastFeedback.respTheta);
+
+      shownFeedback = {
+        stim:        lastFeedback.stim,
+        rotation:    lastFeedback.rotation,
+        targetTheta: lastFeedback.targetTheta,
+        responded:   responded,
+        respTheta:   responded ? lastFeedback.respTheta : null,
+        absError:    responded ? lastFeedback.absError  : NaN
+      };
+    }
+  };
+
+  /*
+   * MAIN-PHASE TIMEOUT WARNING.
+   *
+   * Shown only when the preceding test trial produced no click, and only on
+   * main trials (the timeline below puts it after `test` in the main branch
+   * only; training trials keep their existing feedback screen, which already
+   * prints its own timeout message).
+   *
+   * The wheel and the probe are simply not drawn, so they disappear the
+   * moment the test canvas is torn down. Nothing here touches wheel /
+   * trialRows / lastFeedback, so no logged quantity changes.
+   */
+  const slowWarning = {
+    type: jsPsychPsychophysics,
+    canvas_width: window.innerWidth,
+    canvas_height: window.innerHeight,
+    background_color: greyBackground,
+    origin_center: false,
+
+    stimuli: [
+      // Background — fill_color gets overwritten in on_start
+      { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+        fill_color: greyBackground, show_start_time: 0 },
+      {
+        obj_type: 'manual',
+        show_start_time: 0,
+        drawFunc: function (s, canvas, ctx) {
+          const { cx, cy } = drawingBox(canvas, ctx);
+          ctx.save();
+          ctx.fillStyle    = SLOW_WARNING_COLOR;
+          ctx.font         = SLOW_WARNING_FONT;
+          ctx.textAlign    = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(SLOW_WARNING_TEXT, cx, cy);
+          ctx.restore();
+        }
+      }
+    ],
+
+    choices: 'NO_KEYS',
+    trial_duration: SLOW_WARNING_MS,
+    data: { trial_part: 'slow_warning' },
+
+    on_start: function (trial) {
+      sizeToViewport(trial);
+      trial.stimuli[0].fill_color =
+        SLOW_WARNING_ON_CONTEXT ? trialState.context : greyBackground;
+    }
+  };
+
+  /*
+   * Wrapper that runs `slowWarning` only after a timed-out test trial.
+   * lastTimedOut is written at the end of test.on_finish, which jsPsych runs
+   * before it moves on to this node.
+   */
+  const slowWarningIfTimedOut = {
+    timeline: [slowWarning],
+    conditional_function: function () { return lastTimedOut === true; }
+  };
+
+  // Inter-Trial Interval
+const iti = {
+  type: jsPsychPsychophysics,
+  canvas_width: window.innerWidth,
+  canvas_height: window.innerHeight,
+  background_color: greyBackground,
+  stimuli: [{
+    obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
+    fill_color: greyBackground, show_start_time: 0
+  }],
+  choices: 'NO_KEYS',
+  trial_duration: ITI_MS,
+  data: { trial_part: 'iti' },
+  on_start: function (trial) {
+    sizeToViewport(trial);
+  }
+};
+
+  // Shown once, right after the last training trial.
+  const mainInstructions = {
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
+      <h2>Training complete</h2>
+      <p>Now it's time for the actual experiment. From now on you will no
+         longer see your error after each response, but only during break times as your average error in that block.</p>
+      <p><b>Good luck!</b></p>
+      <p>Press any key to begin.</p></div>`,
+    choices: 'ALL_KEYS',
+    data: { trial_part: 'instructions_main' },
+    on_finish: () => hideLoading()
+  };
+
+
+  const timeline = [];
+
+  // Ask the person to switch to fullscreen
+  timeline.push({
+    type: jsPsychFullscreen,
+    fullscreen_mode: true,
+    message: '<p style="font-family:sans-serif">The experiment will now switch to full screen. It is extremely important that you stay in fullscreen throughout the entire study!</p>',
+    button_label: 'Begin'
+  });
+
+
+  // Experiment intructions
+  timeline.push({
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
+      <h2>Welcome to the experiment!</h2>
+      <p>On each trial you will briefly see two objects. Try to remember the
+         colour of each one.</p>
+      <p>Then one object will reappear in the centre of a colour ring. Move the
+         mouse around the ring to change its colour, and <b>click</b> when it
+         matches the colour you saw. You will have <b>4 seconds</b> to make a click.</p>
+      <p>After you click, you'll briefly see your error, which shows how far your response was from the correct color.</p>
+      <p>The smaller your error, the closer you are to the correct answer. Try to minimize your error throughout the study.</p>
+      <p><b>You are now about to start a short training part</b></p>
+      <p>Press any key to start.</p></div>`,
+    on_finish: () => hideLoading()
+  });
+
+
+const BREAK_SECONDS = 60;   // 1 minute
+let breakTimerId = null;
+
+function startCountdown(seconds, display) {
+  const endTime = Date.now() + seconds * 1000;
+
+  const render = () => {
+    const remaining = Math.max(0, Math.round((endTime - Date.now()) / 1000));
+    const m = String(Math.floor(remaining / 60)).padStart(2, '0');
+    const s = String(remaining % 60).padStart(2, '0');
+    if (display) display.textContent = `${m}:${s}`;
+  };
+
+  render();                                  // paint immediately, no blank first second
+  return setInterval(render, 250);           // sub-second ticks so it never looks stalled
+}
+
+/*
+ * Average absolute error for one block, shown on the break screen. Read from
+ * trialRows, the script's own trial log, rather than from jsPsych's data
+ * store, which is where on_finish keys were being dropped (see the note above
+ * trialRows). Missed trials (null) are left out of the average, and so are
+ * the practice trials, which carry block 0.
+ */
+function averageErrorCalculate(blockNum) {
+  const nums = trialRows
+    .filter(r => Number(r.block) === Number(blockNum))
+    .map(r => r.abs_angular_error)
+    .filter(Number.isFinite);
+  if (nums.length === 0) return NaN;
+  return nums.reduce((sum, n) => sum + n, 0) / nums.length;
+}
+
+function makeBreakTrial(prevBlock) {
+  return {
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: () => {
+      const avg = averageErrorCalculate(prevBlock);
+      const avgText = Number.isFinite(avg) ? `${avg.toFixed(1)}°` : 'n/a';
+      const blocksLeft = nBlocks - prevBlock;
+
+      return `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
+        <h2>End of block. Please take a break</h2>
+        <p>Average error in this block: ${avgText}</p>
+        <p>Remaining blocks: ${blocksLeft}</p>
+        <p>Next block begins in: <span id="break-timer" style="font-variant-numeric:tabular-nums">--:--</span></p>
+        <p>If you are ready now, press any key to skip the remaining break.</p></div>`;
+    },
+    choices: 'ALL_KEYS',
+    trial_duration: BREAK_SECONDS * 1000,
+    on_load: () => {
+      document.body.style.backgroundColor = 'rgb(128,128,128)';
+      breakTimerId = startCountdown(BREAK_SECONDS, document.querySelector('#break-timer'));
+    },
+    on_finish: () => {
+      document.body.style.backgroundColor = '';
+      clearInterval(breakTimerId);
+      breakTimerId = null;
+      hideLoading();
+    }
+  };
+}
+
+/*
+ * Each chunk is split into its training part and its main part. Training
+ * trials get the feedback screen; main trials get the timeout warning screen
+ * instead, and only when they actually time out. The instructions screen
+ * goes in front of the first main trial, wherever it falls.
+ *
+ * With the practice trials in their own chunk, the layout is:
+ *
+ *   chunk 0  : 12 practice trials (block 0)
+ *   chunk 1  : instructions, then 60 main trials (block 1, trials 13-72)
+ *   chunk 2  : break, then 60 main trials (block 2, trials 73-132)
+ *   ...
+ *   chunk 11 : break, then 60 main trials (block 11, trials 613-672)
+ *
+ * The break before chunk 1 is suppressed because the instructions screen is
+ * itself self-paced, so participants never get two pauses in a row.
+ */
+blocks.forEach((vars, k) => {
+  const trainVars = vars.filter(v => v.isTraining);
+  const mainVars  = vars.filter(v => !v.isTraining);
+  const startsMain = N_TRAINING > 0 && mainVars.length > 0 &&
+                     mainVars[0].trialCount === N_TRAINING + 1;
+
+  timeline.push(blockPrep(k));
+
+  if (k > 0 && !(startsMain && trainVars.length === 0)) {
+    timeline.push(makeBreakTrial(blocks[k - 1][0].block));
+  }
+
+  if (trainVars.length) {
+    timeline.push({ timeline: [habituation, study, study2, test, feedback, iti], timeline_variables: trainVars });
+  }
+  if (mainVars.length) {
+    if (startsMain) timeline.push(mainInstructions);
+    timeline.push({ timeline: [habituation, study, study2, test, slowWarningIfTimedOut, iti],
+                    timeline_variables: mainVars });
+  }
+
+  timeline.push(blockSave(k));
+});
+
+  timeline.push({
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div style="font-family:sans-serif;text-align:center">
+      <h2>End of experiment</h2><p>Thank you for your participation. Press any key to save your data.</p></div>`,
+    choices: 'ALL_KEYS'
+  });
+
+
+  hideLoading();
+  await jsPsych.run(timeline);
+}
+
+runExperiment().catch(err => {
+  console.error(err);
+  showLoading('Setup failed: ' + err.message);
+});
+
+  </script>
+  </body>
+</html>
