@@ -1127,7 +1127,7 @@ const study = {
     { obj_type: 'manual', show_start_time: 800, show_end_time: 1200,
       drawFunc: function (s, canvas, ctx) {
         const { cx, cy } = drawingBox(canvas, ctx);
-        drawStim(ctx, trialState.stims[0], trialState.colors[0],
+        drawStim(ctx, trialState.stims[1], trialState.colors[1],
                 cx,
                 cy, imageScale, 0);
       }
@@ -1136,7 +1136,7 @@ const study = {
     { obj_type: 'manual', show_start_time: 1800, show_end_time: 2200,
       drawFunc: function (s, canvas, ctx) {
         const { cx, cy } = drawingBox(canvas, ctx);
-        drawStim(ctx, trialState.stims[1], trialState.colors[1],
+        drawStim(ctx, trialState.stims[0], trialState.colors[0],
                 cx,
                 cy, imageScale, 0);
       }
