@@ -547,6 +547,20 @@ function drawWheel(ctx, cx, cy, currentTheta) {
   }
 }
 
+function drawWheelAttCheck(ctx, cx, cy) {
+  ctx.save();
+
+  ctx.strokeStyle = CIRCLE_COLOR;
+  ctx.lineWidth   = CIRCLE_LINE_W;
+  ctx.beginPath();
+  ctx.arc(cx, cy, CIRCLE_R, 0, 2 * Math.PI);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+
+
 
 // Dynamically track where the mouse is to rotate the color of the probe object
 
@@ -1561,6 +1575,8 @@ const study = {
         }
       }
     ],
+
+
     choices: 'NO_KEYS',
     trial_duration: FEEDBACK_MS,
     data: { trial_part: 'feedback' },
@@ -1775,6 +1791,68 @@ function makeBreakTrial(prevBlock) {
     }
   };
 }
+
+// Check whether there's an attention check in this trial
+function doAttentionCheck (attCheckIdx) {
+
+  // If index is not 1, it's not time for a check. Leave the function now
+  if (attCheckIdx !== 1) return; 
+
+  // Otherwise, go down the scope
+  
+  // The attention check requires the person to make a mouse click 
+  // anywhere along the color ring within a specified duration 
+  const attentionCheck = {
+    type: jsPsychPsychophysics,
+    canvas_width: window.innerWidth,
+    canvas_height: window.innerHeight,
+    background_color: greyBackground,
+
+    // Lay down the background
+    stimuli: [
+      {obj_type: 'rect', width: window.innerWidth, height: window.innerHeight, fill_color: greyBackground, show_start_time: 0},
+    
+      // Draw the wheel
+      {
+        obj_type: 'manual', 
+        width: window.innerWidth, 
+        height: window.innerHeight, 
+        fill_color: greyBackground, 
+        show_start_time: 0,
+
+        drawFunc: function(s, canvas, ctx) {
+          const {cx, cy} = drawingBox(canvas, ctx);
+          drawWheelAttCheck(ctx, cx, cy);
+
+          // The instruction for the attention check task
+          ctx.fillStyle = 'white';
+          ctx.font = '28px sans-serif';
+          ctx.textAlign = 'center';        
+          ctx.textBaseline = 'bottom';     
+          ctx.fillText('If you are seeing this, please click ON the circle. Not inside or outside of it', cx, cy - wheelRadius - 40);
+        }
+      }
+    ],
+
+    choices: 'NO_KEYS',
+    response_type: "mouse",
+    trial_duration: 10000,
+
+    on_start: function (trial) {
+      sizeToViewport(trial);
+    }
+  }
+}
+
+
+
+
+
+
+
+
+
+
 
 /*
  * Each chunk is split into its training part and its main part. Training
