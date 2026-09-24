@@ -1004,8 +1004,7 @@ async function runExperiment() {
     const cols = COND_HAS_THETA_COL ? row.slice(0, 5).concat(row.slice(6)) : row;
     const condTheta = COND_HAS_THETA_COL ? row[5] : null;
 
-    const [rep, context, rep1color, novel, probe,
-            stimID1, stimID3, checkTime] = cols;
+    const [rep, context, rep1color, novel, probe, checkTime] = cols;
 
     // Also get the stimulus names
     const [rep1, novelStim] = imageMatrix[i];
@@ -1024,11 +1023,11 @@ async function runExperiment() {
         condTheta,
         colors: [novel, rep1color],
         probe,
+        checkTime,
         trialCount: i + 1,
         isTraining: i < N_TRAINING,     // the first N_TRAINING trials are practice
-        stimNames: [novelStim, rep1],
-        stimIDs: [stimID3, stimID1],
-        checkTime, 
+        stimNames: [novelStim, rep1]
+
     };
     });
 
