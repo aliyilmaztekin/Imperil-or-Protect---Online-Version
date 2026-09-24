@@ -703,7 +703,7 @@ const ROW_COLUMNS = [
   'rt', 'move_onset', 'click_rt', 'movement_time',
   'cursor_angle', 'cursor_radius',
   'click_x', 'click_y', 'click_theta', 'click_radius',
-  'screen_w', 'screen_h', 'dpr'
+  'screen_w', 'screen_h', 'dpr', 'click_distance', 'check_sucess'
 ];
 
 /*
@@ -730,8 +730,8 @@ const DECIMALS = {
   raw_angle: 2, adjusted_angle: 2, response_hue: 2,
   target_hue: 2, target_theta: 2,
   cursor_angle: 2, cursor_radius: 1,
-  click_x: 1, click_y: 1, click_theta: 2, click_radius: 1,
-  dpr: 2
+  click_x: 1, click_y: 1, click_theta: 2, click_radius: 1, 
+  dpr: 2, click_distance: 1
 };
 
 // null becomes a genuinely empty cell, which reads as NA in R and as NaN in
@@ -1005,7 +1005,7 @@ async function runExperiment() {
     const condTheta = COND_HAS_THETA_COL ? row[5] : null;
 
     const [rep, context, rep1color, novel, probe,
-            stimID1, stimID3] = cols;
+            stimID1, stimID3, checkTime] = cols;
 
     // Also get the stimulus names
     const [rep1, novelStim] = imageMatrix[i];
@@ -1028,6 +1028,7 @@ async function runExperiment() {
         isTraining: i < N_TRAINING,     // the first N_TRAINING trials are practice
         stimNames: [rep1, novelStim],
         stimIDs: [stimID1, stimID3],
+        checkTime, 
     };
     });
 
@@ -1126,6 +1127,100 @@ async function runExperiment() {
     probeName: null, stimNames: null, studyColors: null
   };
 
+// The attention check requires the person to make a mouse click 
+  // anywhere along the color ring within a specified duration 
+  const attentionCheck = {
+    type: jsPsychPsychophysics,
+    canvas_width: window.innerWidth,
+    canvas_height: window.innerHeight,
+    background_color: greyBackground,
+
+    // Lay down the background
+    stimuli: [
+      {obj_type: 'rect', width: window.innerWidth, height: window.innerHeight, fill_color: greyBackground, show_start_time: 0},
+    
+      // Draw the wheel
+      {
+        obj_type: 'manual', 
+        width: window.innerWidth, 
+        height: window.innerHeight, 
+        fill_color: greyBackground, 
+        show_start_time: 0,
+
+        drawFunc: function(s, canvas, ctx) {
+          const {cx, cy} = drawingBox(canvas, ctx);
+          drawWheelAttCheck(ctx, cx, cy);
+
+          // The instruction for the attention check task
+          ctx.fillStyle = 'white';
+          ctx.font = '28px sans-serif';
+          ctx.textAlign = 'center';        
+          ctx.textBaseline = 'bottom';     
+          ctx.fillText('If you are seeing this, please click ON the circle. Not inside or outside of it', cx, cy - CIRCLE_R - 40);
+        }
+      }
+    ],
+
+  choices: 'NO_KEYS',
+  response_type: 'mouse',
+  trial_duration: 10000,
+
+  // Static labels go in the trial's data property
+  data: { trial_part: 'attention_check' },
+
+  on_start: function (trial) {
+    sizeToViewport(trial);
+    trial.stimuli[0].fill_color = trialState.context;
+  },
+
+  on_finish: function (data) {
+    if (!Number.isFinite(data.click_x)) data.click_x = null;
+    if (!Number.isFinite(data.click_y)) data.click_y = null;
+      
+    let dist = null, success = false;
+    if (data.click_x != null) {
+      dist = Math.hypot(data.click_x, data.click_y);
+      success = Math.abs(CIRCLE_R - dist) <= 5 + CIRCLE_LINE_W / 2;
+    }
+      data.click_distance = dist;
+      data.check_success  = success;
+
+      const result = {
+        att_check_time:     trialState.attCheckStart ? 'start' : 'end',
+        att_click_distance: dist,
+        att_check_success:  success
+      };
+
+      if (trialState.attCheckStart) {
+        trialState.attCheckResult = result;                   
+      } else {
+        Object.assign(trialRows[trialRows.length - 1], result); 
+      }
+    }
+};
+
+// This part exists to see whether an attention check 
+// should come at the beginning of a new block
+const preTrial = {
+  type: jsPsychCallFunction,
+  func: function () {
+    const when = Number(jsPsych.evaluateTimelineVariable('checkTime'));
+    trialState.attCheckStart  = when === 1;
+    trialState.attCheckEnd    = when === 2;
+    trialState.attCheckResult = null;   // clear the previous trial's result
+  }
+};
+
+const attCheckAtStart = {
+  timeline: [attentionCheck],
+  conditional_function: () => trialState.attCheckStart === true
+};
+
+const attCheckAtEnd = {
+  timeline: [attentionCheck],
+  conditional_function: () => trialState.attCheckEnd === true
+};
+
 const study = {
   type: jsPsychPsychophysics,
   canvas_width: window.innerWidth,
@@ -1174,7 +1269,7 @@ const study = {
     // ReferenceError at the bottom of this function.
     const allItems = jsPsych.evaluateTimelineVariable('stimNames');
 
-    let curContextColor;                      // declared once, in function scope
+    let curContextColor;                      
     if (trialCount == 1) {
       curContextColor = contextColors[Number(startContext)];
     } else {
@@ -1260,7 +1355,6 @@ const study = {
       rep:          jsPsych.timelineVariable('rep'),
       cond_context: jsPsych.timelineVariable('context'),
       probe:        jsPsych.timelineVariable('probe'),
-      
       cond_theta:   jsPsych.timelineVariable('condTheta'),
     },
 
@@ -1487,7 +1581,12 @@ const study = {
 
         screen_w: window.innerWidth,
         screen_h: window.innerHeight,
-        dpr:      window.devicePixelRatio || 1
+        dpr:      window.devicePixelRatio || 1,
+
+          att_check_time:     null,
+          att_click_distance: null,
+          att_check_success:  null,
+          ...(trialState.attCheckResult || {})
       });
 
       // Hand the response to the feedback screen (training trials only use
@@ -1575,7 +1674,6 @@ const study = {
         }
       }
     ],
-
 
     choices: 'NO_KEYS',
     trial_duration: FEEDBACK_MS,
@@ -1666,8 +1764,8 @@ const study = {
     timeline: [slowWarning],
     conditional_function: function () { return lastTimedOut === true; }
   };
-
-  // Inter-Trial Interval
+  
+// Inter-Trial Interval
 const iti = {
   type: jsPsychPsychophysics,
   canvas_width: window.innerWidth,
@@ -1792,66 +1890,6 @@ function makeBreakTrial(prevBlock) {
   };
 }
 
-// Check whether there's an attention check in this trial
-function doAttentionCheck (attCheckIdx) {
-
-  // If index is not 1, it's not time for a check. Leave the function now
-  if (attCheckIdx !== 1) return; 
-
-  // Otherwise, go down the scope
-  
-  // The attention check requires the person to make a mouse click 
-  // anywhere along the color ring within a specified duration 
-  const attentionCheck = {
-    type: jsPsychPsychophysics,
-    canvas_width: window.innerWidth,
-    canvas_height: window.innerHeight,
-    background_color: greyBackground,
-
-    // Lay down the background
-    stimuli: [
-      {obj_type: 'rect', width: window.innerWidth, height: window.innerHeight, fill_color: greyBackground, show_start_time: 0},
-    
-      // Draw the wheel
-      {
-        obj_type: 'manual', 
-        width: window.innerWidth, 
-        height: window.innerHeight, 
-        fill_color: greyBackground, 
-        show_start_time: 0,
-
-        drawFunc: function(s, canvas, ctx) {
-          const {cx, cy} = drawingBox(canvas, ctx);
-          drawWheelAttCheck(ctx, cx, cy);
-
-          // The instruction for the attention check task
-          ctx.fillStyle = 'white';
-          ctx.font = '28px sans-serif';
-          ctx.textAlign = 'center';        
-          ctx.textBaseline = 'bottom';     
-          ctx.fillText('If you are seeing this, please click ON the circle. Not inside or outside of it', cx, cy - wheelRadius - 40);
-        }
-      }
-    ],
-
-    choices: 'NO_KEYS',
-    response_type: "mouse",
-    trial_duration: 10000,
-
-    on_start: function (trial) {
-      sizeToViewport(trial);
-    }
-  }
-}
-
-
-
-
-
-
-
-
-
 
 
 /*
@@ -1888,8 +1926,9 @@ blocks.forEach((vars, k) => {
   }
   if (mainVars.length) {
     if (startsMain) timeline.push(mainInstructions);
-    timeline.push({ timeline: [study, test, slowWarningIfTimedOut, iti],
-                    timeline_variables: mainVars });
+    timeline.push({ timeline: [preTrial, attCheckAtStart, study, test,
+                           slowWarningIfTimedOut, attCheckAtEnd, iti],
+                timeline_variables: mainVars });
   }
 
   timeline.push(blockSave(k));
