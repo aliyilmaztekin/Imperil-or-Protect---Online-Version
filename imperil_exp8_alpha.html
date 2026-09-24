@@ -1136,7 +1136,7 @@ async function runExperiment() {
 
     // Lay down the background
     stimuli: [
-      {obj_type: 'rect', width: window.innerWidth, height: window.innerHeight, fill_color: greyBackground, show_start_time: 0},
+      {obj_type: 'rect', width: window.innerWidth, height: window.innerHeight, fill_color: greyBackground, show_start_time: 0, show_end_time: 500},
     
       // Draw the wheel
       {
@@ -1925,7 +1925,6 @@ blocks.forEach((vars, k) => {
   const mainVars  = vars.filter(v => !v.isTraining);
   const startsMain = N_TRAINING > 0 && mainVars.length > 0 &&
                      mainVars[0].trialCount === N_TRAINING + 1;
-  const startContextText = N_TRAINING > 0 && trainVars.length > 0 && trainVars[0].trialCount === 5;
 
   timeline.push(blockPrep(k));
 
@@ -1933,10 +1932,20 @@ blocks.forEach((vars, k) => {
     timeline.push(makeBreakTrial(blocks[k - 1][0].block));
   }
 
-  if (trainVars.length) {
-    if (startContextText) timeline.push(contextInstructions);
-    timeline.push({ timeline: [study, test, feedback, iti], timeline_variables: trainVars });
+   if (trainVars.length) {
+    const CONTEXT_INTRO_TRIAL = 5;   // instructions appear right before this trial
+    const before = trainVars.filter(v => v.trialCount <  CONTEXT_INTRO_TRIAL);
+    const after  = trainVars.filter(v => v.trialCount >= CONTEXT_INTRO_TRIAL);
+
+    if (before.length) {
+      timeline.push({ timeline: [study, test, feedback, iti], timeline_variables: before });
+    }
+    if (after.length) {
+      if (after[0].trialCount === CONTEXT_INTRO_TRIAL) timeline.push(contextInstructions);
+      timeline.push({ timeline: [study, test, feedback, iti], timeline_variables: after });
+    }
   }
+  
   if (mainVars.length) {
     if (startsMain) timeline.push(mainInstructions);
     timeline.push({ timeline: [preTrial, attCheckAtStart, study, test,
