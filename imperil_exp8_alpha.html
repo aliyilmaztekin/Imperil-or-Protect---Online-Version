@@ -1136,7 +1136,7 @@ async function runExperiment() {
 
     // Lay down the background
     stimuli: [
-      {obj_type: 'rect', width: window.innerWidth, height: window.innerHeight, fill_color: greyBackground, show_start_time: 0, show_end_time: 500},
+      {obj_type: 'rect', width: window.innerWidth, height: window.innerHeight, fill_color: greyBackground, show_start_time: 0},
     
       // Draw the wheel
       {
@@ -1144,7 +1144,7 @@ async function runExperiment() {
         width: window.innerWidth, 
         height: window.innerHeight, 
         fill_color: greyBackground, 
-        show_start_time: 0,
+        show_start_time: 500,
 
         drawFunc: function(s, canvas, ctx) {
           const {cx, cy} = drawingBox(canvas, ctx);
@@ -1162,7 +1162,7 @@ async function runExperiment() {
 
   choices: 'NO_KEYS',
   response_type: 'mouse',
-  trial_duration: 10000,
+  trial_duration: 10500,
 
   // Static labels go in the trial's data property
   data: { trial_part: 'attention_check' },
@@ -1799,10 +1799,10 @@ const iti = {
   // Shown once, right after the last training trial.
   const contextInstructions = {
     type: jsPsychHtmlKeyboardResponse,
-    stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
-      <p>Sometimes, the background may change. But your task remains the same.
-         You can imagine the background color as if it's the color of the room around you</p>
-      <p>Press any key to continue.</p></div>`,
+    stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:center">
+      <p>Sometimes, the background may change. But your task remains the same.</p>
+      <p>You can imagine the background color as if it's the color of the room around you</p>
+      <p><b>Press any key to continue</b></p></div>`,
     choices: 'ALL_KEYS',
     data: { trial_part: 'instructions_main' },
     on_finish: () => hideLoading()
@@ -1945,7 +1945,7 @@ blocks.forEach((vars, k) => {
       timeline.push({ timeline: [study, test, feedback, iti], timeline_variables: after });
     }
   }
-  
+
   if (mainVars.length) {
     if (startsMain) timeline.push(mainInstructions);
     timeline.push({ timeline: [preTrial, attCheckAtStart, study, test,
