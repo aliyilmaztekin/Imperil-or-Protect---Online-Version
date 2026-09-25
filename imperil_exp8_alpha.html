@@ -1960,8 +1960,9 @@ blocks.forEach((vars, k) => {
     const after  = trainVars.filter(v => v.trialCount >= CONTEXT_INTRO_TRIAL);
 
     if (before.length) {
-      if (before[0].trialCount === errorInstructionsTrial) timeline.push(errorInstructions);
-      if (before[0].trialCount === loadInstructionsTrial) timeline.push(loadInstructions);
+      if (before[0].trialCount === errorInstructionsTrial) timeline.push({ timeline: [study, test, errorInstructions, feedback, iti], timeline_variables: before });
+      if (before[0].trialCount === loadInstructionsTrial) timeline.push({ timeline: [loadInstructions, study, test, feedback, iti], timeline_variables: before });
+      // Otherwise, the default timeline for the training phase:
       timeline.push({ timeline: [study, test, feedback, iti], timeline_variables: before });
     }
     if (after.length) {
