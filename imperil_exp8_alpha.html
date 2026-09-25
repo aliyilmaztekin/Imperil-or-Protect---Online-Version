@@ -1810,6 +1810,27 @@ const iti = {
     on_finish: () => hideLoading()
   };
 
+    const errorInstructions = {
+      type: jsPsychHtmlKeyboardResponse,
+      stimulus: `<div style= "font-family:sans-serif;max-width:640px;margin:auto;text-align:center">
+        <p>After you click, you'll briefly see your error, which shows how far your response was from the correct color.</p>
+        <p>The smaller your error is, the closer you are to the correct answer. Throughout the experiment, try to minimize your error.</p>
+        <p><b>Press any key to continue</b></p></div>`,
+      choices: 'ALL_KEYS',
+      data: { trial_part: 'error_instructions' },
+      on_finish: () => hideLoading()
+    }
+
+    const loadInstructions = {
+      type: jsPsychHtmlKeyboardResponse,
+      stimulus: `<div style= "font-family:sans-serif;max-width:640px;margin:auto;text-align:center">
+        <p>The first object will change into a new one in every trial, but the second object will remain the same for six trials in a row.</p>
+        <p><b>Press any key to continue</b></p></div>`,
+      choices: 'ALL_KEYS',
+      data: { trial_part: 'load_instructions' },
+      on_finish: () => hideLoading()
+    }
+
 
   const timeline = [];
 
@@ -1828,12 +1849,9 @@ const iti = {
     stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:center">
       <h2>Welcome to the experiment!</h2>
       <p>On each trial you will briefly see two objects. Please keep the color of both objects in mind.</p>
-      <p>Then one of the objects will reappear inside a color ring. Move the
-         mouse around the ring to change the object's color, and <b>click</b> when it
+      <p>Then one of the objects will reappear inside a color ring. The task is to indicate the color of that tested image.</p> 
+      <p>To do so, move the mouse around the ring to change the object's color, and <b>click</b> when it
          matches the colour you saw. You will have <b>4 seconds</b> to make a click.</p>
-      <p>After you click, you'll briefly see your error, which shows how far your response was from the correct color.</p>
-      <p>The smaller your error is, the closer you are to the correct answer.</p>
-      <p>Throughout the study, the first image in every trial will change, but the second will stay the same for six times in a row.</p>
       <p>You are now about to start a short training part.</p>
       <p><b>Press any key to start.</b></p></div>`,
     on_finish: () => hideLoading()
@@ -1935,11 +1953,15 @@ blocks.forEach((vars, k) => {
   }
 
    if (trainVars.length) {
-    const CONTEXT_INTRO_TRIAL = 5;   // instructions appear right before this trial
+    const CONTEXT_INTRO_TRIAL = 5; 
+    const errorInstructionsTrial = 1;
+    const loadInstructionsTrial = 2;
     const before = trainVars.filter(v => v.trialCount <  CONTEXT_INTRO_TRIAL);
     const after  = trainVars.filter(v => v.trialCount >= CONTEXT_INTRO_TRIAL);
 
     if (before.length) {
+      if (before[0].trialCount === errorInstructionsTrial) timeline.push(errorInstructions);
+      if (before[0].trialCount === loadInstructionsTrial) timeline.push(loadInstructions);
       timeline.push({ timeline: [study, test, feedback, iti], timeline_variables: before });
     }
     if (after.length) {
