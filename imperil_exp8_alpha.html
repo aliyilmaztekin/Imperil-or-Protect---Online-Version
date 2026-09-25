@@ -1235,19 +1235,8 @@ const study = {
     // Background — fill_color gets overwritten in on_start
     { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
       fill_color: greyBackground, show_start_time: 0 },
-    console.log('bg', performance.now().toFixed(1)),
-
+    
     { obj_type: 'manual', show_start_time: 800, show_end_time: 1200,
-      drawFunc: function (s, canvas, ctx) {
-        const { cx, cy } = drawingBox(canvas, ctx);
-        drawStim(ctx, trialState.stims[0], trialState.colors[0],
-                cx,
-                cy, imageScale, 0);
-      }
-    },
-    console.log('first item', performance.now().toFixed(1)),
-
-    { obj_type: 'manual', show_start_time: 1800, show_end_time: 2200,
       drawFunc: function (s, canvas, ctx) {
         const { cx, cy } = drawingBox(canvas, ctx);
         drawStim(ctx, trialState.stims[1], trialState.colors[1],
@@ -1255,7 +1244,15 @@ const study = {
                 cy, imageScale, 0);
       }
     },
-  console.log('second item', performance.now().toFixed(1)),
+
+    { obj_type: 'manual', show_start_time: 1800, show_end_time: 2200,
+      drawFunc: function (s, canvas, ctx) {
+        const { cx, cy } = drawingBox(canvas, ctx);
+        drawStim(ctx, trialState.stims[0], trialState.colors[0],
+                cx,
+                cy, imageScale, 0);
+      }
+    },
   ],
   choices: 'NO_KEYS',
   trial_duration: 2200 + 600,
@@ -1266,10 +1263,10 @@ const study = {
     trialCount: jsPsych.timelineVariable('trialCount'),
   },
 
-
   on_start: function (trial) {
     sizeToViewport(trial);
     const trialCount = jsPsych.evaluateTimelineVariable('trialCount');
+
 
     // Was previously referenced but never declared here, which threw a
     // ReferenceError at the bottom of this function.
@@ -1323,7 +1320,6 @@ const study = {
       // Background — fill_color gets overwritten in on_start
     { obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
       fill_color: greyBackground, show_start_time: 0 },
-      console.log('bg_test', performance.now().toFixed(1)),
       {
         obj_type: 'manual',
         show_start_time: 0,
@@ -1349,7 +1345,6 @@ const study = {
           }
         }
       },
-      console.log('test done', performance.now().toFixed(1)),
     ],
     response_type: 'mouse', // Allow a mouse click to end testing
     response_start_time: 0,
@@ -1789,9 +1784,6 @@ const iti = {
   on_start: function (trial) {
     sizeToViewport(trial);
   },
-  on_finish: function (trial) {
-    console.log('iti done', performance.now().toFixed(1))
-  }
 };
 
   // Shown once, right after the last training trial.
