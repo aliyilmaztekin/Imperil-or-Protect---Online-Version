@@ -1952,23 +1952,30 @@ blocks.forEach((vars, k) => {
     timeline.push(makeBreakTrial(blocks[k - 1][0].block));
   }
 
-   if (trainVars.length) {
-    const CONTEXT_INTRO_TRIAL = 5; 
-    const errorInstructionsTrial = 1;
-    const loadInstructionsTrial = 2;
-    const before = trainVars.filter(v => v.trialCount <  CONTEXT_INTRO_TRIAL);
-    const after  = trainVars.filter(v => v.trialCount >= CONTEXT_INTRO_TRIAL);
+  if (trainVars.length) {
+    const CONTEXT_INTRO_TRIAL = 5;
+    const ERROR_INSTR_TRIAL = 1;
+    const LOAD_INSTR_TRIAL = 2;
 
-    if (before.length) {
-      if (before[0].trialCount === errorInstructionsTrial) timeline.push({ timeline: [study, test, errorInstructions, feedback, iti], timeline_variables: before });
-      if (before[0].trialCount === loadInstructionsTrial) timeline.push({ timeline: [loadInstructions, study, test, feedback, iti], timeline_variables: before });
-      // Otherwise, the default timeline for the training phase:
-      timeline.push({ timeline: [study, test, feedback, iti], timeline_variables: before });
-    }
-    if (after.length) {
-      if (after[0].trialCount === CONTEXT_INTRO_TRIAL) timeline.push(contextInstructions);
-      timeline.push({ timeline: [study, test, feedback, iti], timeline_variables: after });
-    }
+  // Runs `node` only on the trial whose trialCount === n
+    const onTrial = (node, n) => ({
+      timeline: [node],
+      conditional_function: () =>
+        jsPsych.evaluateTimelineVariable('trialCount') === n,
+    });
+
+    timeline.push({
+      timeline: [
+        onTrial(contextInstructions, CONTEXT_INTRO_TRIAL),
+        onTrial(loadInstructions, LOAD_INSTR_TRIAL),
+        study,
+        test,
+        onTrial(errorInstructions, ERROR_INSTR_TRIAL),
+        feedback,
+        iti,
+      ],
+      timeline_variables: trainVars,
+    });
   }
 
   if (mainVars.length) {
