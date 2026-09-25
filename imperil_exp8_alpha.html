@@ -165,10 +165,11 @@ const SLOW_WARNING_FONT       = FEEDBACK_FONT;
 const SLOW_WARNING_ON_CONTEXT = true;
 
 // Scale the original size of the image
-const imageScale = 0.32;
+const imageScale = 1.00;
 
 // Color wheel circle
-const CIRCLE_R      = 169;
+const CIRCLE_R      = 225;
+const leeway        = 10;
 const CIRCLE_LINE_W = 3;
 const CIRCLE_COLOR  = 'rgb(0,0,0)';
 const WHEEL_MARKER  = true;        // short tick showing the current angle
@@ -1151,7 +1152,7 @@ async function runExperiment() {
           drawWheelAttCheck(ctx, cx, cy);
 
           // The instruction for the attention check task
-          ctx.fillStyle = 'white';
+          ctx.fillStyle = 'black';
           ctx.font = '28px sans-serif';
           ctx.textAlign = 'center';        
           ctx.textBaseline = 'bottom';     
@@ -1179,7 +1180,7 @@ async function runExperiment() {
     let dist = null, success = false;
     if (data.click_x != null) {
       dist = Math.hypot(data.click_x, data.click_y);
-      success = Math.abs(CIRCLE_R - dist) <= 5 + CIRCLE_LINE_W / 2;
+      success = Math.abs(CIRCLE_R - dist) <= leeway + CIRCLE_LINE_W / 2;
     }
       data.click_distance = dist;
       data.check_success  = success;
@@ -1786,12 +1787,12 @@ const iti = {
   // Shown once, right after the last training trial.
   const mainInstructions = {
     type: jsPsychHtmlKeyboardResponse,
-    stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
+    stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:center">
       <h2>Training complete</h2>
       <p>Now it's time for the actual experiment. From now on you will no
          longer see your error after each response, but only during break times as your average error in that block.</p>
-      <p><b>Good luck!</b></p>
-      <p>Press any key to begin.</p></div>`,
+      <p>Good luck!</p>
+      <p><b>Press any key to begin.</b></p></div>`,
     choices: 'ALL_KEYS',
     data: { trial_part: 'instructions_main' },
     on_finish: () => hideLoading()
@@ -1880,12 +1881,12 @@ function makeBreakTrial(prevBlock) {
       const avgText = Number.isFinite(avg) ? `${avg.toFixed(1)}°` : 'n/a';
       const blocksLeft = nBlocks - prevBlock;
 
-      return `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
+      return `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:center">
         <h2>End of block. Please take a break</h2>
         <p>Average error in this block: ${avgText}</p>
         <p>Remaining blocks: ${blocksLeft}</p>
         <p>Next block begins in: <span id="break-timer" style="font-variant-numeric:tabular-nums">--:--</span></p>
-        <p>If you are ready now, press any key to skip the remaining break.</p></div>`;
+        <p><b>If you are ready now, press any key to skip the remaining break.</b></p></div>`;
     },
     choices: 'ALL_KEYS',
     trial_duration: BREAK_SECONDS * 1000,
