@@ -165,7 +165,7 @@ const SLOW_WARNING_FONT       = FEEDBACK_FONT;
 const SLOW_WARNING_ON_CONTEXT = true;
 
 // Scale the original size of the image
-const imageScale = 1.00;
+const imageScale = 0.64; // 256x256 pixels. Original size: 400x400
 
 // Color wheel circle
 const CIRCLE_R      = 225;
@@ -1790,7 +1790,7 @@ const iti = {
     stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:center">
       <h2>Training complete</h2>
       <p>Now it's time for the actual experiment. From now on you will no
-         longer see your error after each response, but only during break times as your average error in that block.</p>
+         longer see your error after each response, but only during breaks as your average error in that block.</p>
       <p>Good luck!</p>
       <p><b>Press any key to begin.</b></p></div>`,
     choices: 'ALL_KEYS',
