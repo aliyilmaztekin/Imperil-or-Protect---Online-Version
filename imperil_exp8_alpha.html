@@ -1183,6 +1183,7 @@ async function runExperiment() {
     }
       data.click_distance = dist;
       data.check_success  = success;
+      console.log(success)
 
       const result = {
         att_check_time:     trialState.attCheckStart ? 'start' : 'end',
@@ -1801,7 +1802,7 @@ const iti = {
     type: jsPsychHtmlKeyboardResponse,
     stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:center">
       <p>Sometimes, the background may change. But your task remains the same.</p>
-      <p>You can imagine the background color as if it's the color of the room around you</p>
+      <p>You can imagine the background color as if it's the color of the room around you.</p>
       <p><b>Press any key to continue</b></p></div>`,
     choices: 'ALL_KEYS',
     data: { trial_part: 'instructions_main' },
@@ -1823,17 +1824,17 @@ const iti = {
   // Experiment intructions
   timeline.push({
     type: jsPsychHtmlKeyboardResponse,
-    stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:left">
+    stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:center">
       <h2>Welcome to the experiment!</h2>
-      <p>On each trial you will briefly see two objects. Try to remember the
-         colour of each one.</p>
-      <p>Then one object will reappear in the centre of a colour ring. Move the
-         mouse around the ring to change its colour, and <b>click</b> when it
+      <p>On each trial you will briefly see two objects. Please keep the color of both objects in mind.</p>
+      <p>Then one of the objects will reappear inside a color ring. Move the
+         mouse around the ring to change the object's color, and <b>click</b> when it
          matches the colour you saw. You will have <b>4 seconds</b> to make a click.</p>
       <p>After you click, you'll briefly see your error, which shows how far your response was from the correct color.</p>
-      <p>The smaller your error, the closer you are to the correct answer. Try to minimize your error throughout the study.</p>
-      <p><b>You are now about to start a short training part</b></p>
-      <p>Press any key to start.</p></div>`,
+      <p>The smaller your error is, the closer you are to the correct answer.</p>
+      <p>Throughout the study, the first image in every trial will change, but the second will stay the same for six times in a row.</p>
+      <p>You are now about to start a short training part.</p>
+      <p><b>Press any key to start.</b></p></div>`,
     on_finish: () => hideLoading()
   });
 
