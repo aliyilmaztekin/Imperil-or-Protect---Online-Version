@@ -1184,8 +1184,8 @@ async function runExperiment() {
     }
       data.click_distance = dist;
       data.check_success  = success;
-      console.log(data.click_distance)
-      console.log(data.click_success)
+      console.log(Math.abs(CIRCLE_R - dist))
+      console.log(data.check_success)
 
 
       const result = {
