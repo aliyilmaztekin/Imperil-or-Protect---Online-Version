@@ -2172,7 +2172,7 @@ const iti = {
       { obj_type: 'manual', show_start_time: 0,
       drawFunc: function (s, canvas, ctx) {
         const { cx, cy, u } = layout(canvas, ctx);
-        const shiftedLocs = [cx - 150*u, cy + 100*u];
+        const shiftedLocs = [cx - 150*u, cy + 25*u];
         drawStim(ctx, tempCont.stims[1], tempCont.colors[1],
                 shiftedLocs[0],
                 shiftedLocs[1], (imageScale/2)*u);   
@@ -2182,7 +2182,7 @@ const iti = {
       { obj_type: 'manual', show_start_time: 0,
         drawFunc: function (s, canvas, ctx) {
           const { cx, cy, u } = layout(canvas, ctx);
-          const midX = cx, y = cy + 100*u;
+          const midX = cx, y = cy + 25*u;
           const halfLen = 30*u; 
           drawArrow(ctx, midX - halfLen, y, midX + halfLen, y);
         },
@@ -2191,7 +2191,7 @@ const iti = {
       { obj_type: 'manual', show_start_time: 0,
       drawFunc: function (s, canvas, ctx) {
         const { cx, cy, u } = layout(canvas, ctx);
-        const shiftedLocs = [cx + 150*u, cy + 100*u];
+        const shiftedLocs = [cx + 150*u, cy + 25*u];
         drawColorWheel(ctx, shiftedLocs[0], shiftedLocs[1])
         drawStim(ctx, tempCont.stims[1], (tempCont.colors[1] + 43),
                 shiftedLocs[0],
@@ -2205,7 +2205,7 @@ const iti = {
         ctx.textBaseline = 'top';
         ctx.font = `${18*u}px sans-serif`;
 
-        ctx.fillText(errorMsg, cx + 150*u, cy - 25*u )
+        ctx.fillText(errorMsg, cx + 150*u, cy - 100*u )
         ctx.restore();
 
         },
@@ -2479,7 +2479,8 @@ const iti = {
 
           const paragraphs = [
             "Of the two objects in every trial, the first object will change into a new one in the next trial.", 
-            "The second object will remain the same for six trials in a row."
+            "The second object will remain the same for six trials in a row.",
+            "However, because the test object in every trial is randomly chosen, it is important that you keep both objects in mind."
           ];
 
           function wrapText(ctx, text, maxWidth) {
@@ -2596,10 +2597,10 @@ const iti = {
 
           // rect (400x250) centered at (cx - 200, cy)
           ctx.fillStyle = 'rgb(165, 127, 151)';
-          ctx.fillRect(cx - 200*u - (300*u)/2, cy - (100*u)/2, 300*u, 200*u);
+          ctx.fillRect(cx - 200*u - (300*u)/2, cy - (200*u)/2, 300*u, 200*u);
 
           drawStim(ctx, tempCont.stims[0], tempCont.colors[0],
-                  cx - 200*u, cy + 50*u, (imageScale/2)*u);
+                  cx - 200*u, cy, (imageScale/2)*u);
         },
       },
 
@@ -2609,17 +2610,17 @@ const iti = {
 
          
           ctx.fillStyle = 'rgb(135, 174, 116)';
-          ctx.fillRect(cx + 200*u - (300*u)/2, cy - (100*u)/2, 300*u, 200*u);
+          ctx.fillRect(cx + 200*u - (300*u)/2, cy - (200*u)/2, 300*u, 200*u);
 
           drawStim(ctx, tempCont.stims[1], tempCont.colors[1],
-                  cx + 200*u, cy + 50*u, (imageScale/2)*u);
+                  cx + 200*u, cy, (imageScale/2)*u);
         },
       },
 
       { obj_type: 'manual', show_start_time: 0,
         drawFunc: function (s, canvas, ctx) {
           const { cx, cy, u } = layout(canvas, ctx);
-          const midX = cx, y = cy + 50*u;
+          const midX = cx, y = cy;
           const halfLen = 30*u; 
           drawArrow(ctx, midX - halfLen, y, midX + halfLen, y);
         },
