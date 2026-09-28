@@ -1898,8 +1898,8 @@ const iti = {
   // Shown once, right after the last training trial.
   const mainInstructions = {
     type: jsPsychHtmlKeyboardResponse,
-    stimulus: `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:center">
-      <h2>Training complete</h2>
+    stimulus: `<div style="font-family:sans-serif;font-size:28px;max-width:640px;margin:auto;text-align:center">
+      <h2 style= "font-size:32px">Training complete</h2>
       <p>Now it's time for the actual experiment. From now on you will no
          longer see your error after each response, but only during breaks as your average error in that block.</p>
       <p>Good luck!</p>
@@ -2047,7 +2047,7 @@ const iti = {
           const paragraphs = [
             "On each trial you will briefly see two objects one by one. Please keep the color of both objects in mind.",
             "Then one of the objects will reappear inside a color ring. The task is to indicate the color of that tested image.",
-            "To do so, move the mouse around the ring to change the object's color, and click when it matches the colour you saw.",
+            "To do so, move the mouse around the ring to change the object's color, and click when it matches the color you saw.",
             "You will have 4 seconds to make a click."
           ];
 
@@ -2684,7 +2684,7 @@ const iti = {
         }
 
         // Upcoming demo message
-        const demoMsg = "You are now about to begin a brief training part";
+        const demoMsg = "You are now about to begin a brief training part.";
         const demoFont = `${28*u}px sans-serif`;
 
         ctx.font = demoFont;
@@ -2786,8 +2786,8 @@ function makeBreakTrial(prevBlock) {
       const avgText = Number.isFinite(avg) ? `${avg.toFixed(1)}°` : 'n/a';
       const blocksLeft = nBlocks - prevBlock;
 
-      return `<div style="font-family:sans-serif;max-width:640px;margin:auto;text-align:center">
-        <h2>End of block. Please take a break</h2>
+      return `<div style="font-family:sans-serif;font-size:28px;max-width:640px;margin:auto;text-align:center">
+        <h2 style = "font-size:32px">End of block. Please take a break</h2>
         <p>Average error in this block: ${avgText}</p>
         <p>Remaining blocks: ${blocksLeft}</p>
         <p>Next block begins in: <span id="break-timer" style="font-variant-numeric:tabular-nums">--:--</span></p>
