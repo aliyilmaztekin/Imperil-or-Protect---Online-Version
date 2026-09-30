@@ -196,7 +196,7 @@ const RING_INNER = 60, RING_OUTER = 400;
 
 // Event durations (in milliseconds)
 const STUDY_MS = 1900, STUDY_STIM_MS = 800;
-const TEST_MS  = 4300, TEST_STIM_MS  = 4000;
+const TEST_MS  = 4000, TEST_STIM_MS  = 4000;
 const ITI_MS   = 300;
 
 // Context colors pre-defined here.
@@ -762,7 +762,7 @@ const ROW_COLUMNS = [
   'rt', 'move_onset', 'click_rt', 'movement_time',
   'cursor_angle', 'cursor_radius',
   'click_x', 'click_y', 'click_theta', 'click_radius',
-  'screen_w', 'screen_h', 'dpr', 'click_distance', 'check_sucess'
+  'screen_w', 'screen_h', 'dpr','att_check_time', 'att_click_distance', 'att_check_success'
 ];
 
 /*
@@ -776,10 +776,10 @@ const ROW_COLUMNS = [
  */
 const TEXT_COLUMNS = new Set([
   'participant_id', 'session', 'timestamp', 'context_color',
-  'probe_stim', 'stim_names', 'study_colors'
+  'probe_stim', 'stim_names', 'study_colors', 'att_check_time'
 ]);
 
-const BOOL_COLUMNS = new Set(['training', 'responded', 'timed_out']);
+const BOOL_COLUMNS = new Set(['training', 'responded', 'timed_out', 'att_check_success']);
 
 // performance.now() differences carry ~10 meaningless decimals. Round at the
 // point of writing rather than leaving 1431.2999999999997 in the sheet.
@@ -790,7 +790,7 @@ const DECIMALS = {
   target_hue: 2, target_theta: 2,
   cursor_angle: 2, cursor_radius: 1,
   click_x: 1, click_y: 1, click_theta: 2, click_radius: 1, 
-  dpr: 2, click_distance: 1
+  dpr: 2, click_distance: 1, att_click_distance: 1
 };
 
 // null becomes a genuinely empty cell, which reads as NA in R and as NaN in
@@ -1774,7 +1774,7 @@ const study = {
 
           const msg = (fb.responded && Number.isFinite(fb.absError))
             ? `Error: ${Math.round(fb.absError)}\u00B0`
-            : 'Please reply quicker!';
+            : 'Please respond quicker';
 
           ctx.save();
           ctx.fillStyle    = FEEDBACK_TEXT_COLOR;
