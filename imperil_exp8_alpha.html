@@ -1186,7 +1186,7 @@ async function runExperiment() {
    */
   const trialState = {
     stims: null, pos: null, colors: null, context: null,
-    probeName: null, stimNames: null, studyColors: null
+    probeName: null, stimNames: null, studyColors: null, keyword: null
   };
 
 // The attention check requires the person to make a mouse click 
@@ -1218,7 +1218,7 @@ async function runExperiment() {
           ctx.font = '28px sans-serif';
           ctx.textAlign = 'center';        
           ctx.textBaseline = 'bottom';     
-          ctx.fillText('If you are seeing this, please click ON the circle. Not inside or outside of it', cx, cy - CIRCLE_R - 40);
+          ctx.fillText('If you are seeing this, please click ON the circle. Not inside or outside of it.', cx, cy - CIRCLE_R - 40);
         }
       }
     ],
@@ -1837,12 +1837,44 @@ const iti = {
   stimuli: [{
     obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
     fill_color: greyBackground, show_start_time: 0
-  }],
+  },
+
+  {
+      obj_type: 'manual', 
+      width: window.innerWidth, 
+      height: window.innerHeight, 
+      fill_color: greyBackground, 
+      show_start_time: 0,
+
+       drawFunc: function(s, canvas, ctx) {
+          const {cx, cy} = drawingBox(canvas, ctx);
+          const keyword = trialState.keyword;
+
+          const itiText = keyword === 1 ? 'NEW' : keyword === 0 ? 'OLD' : '';
+
+          ctx.fillStyle = 'black';
+          ctx.font = '36px sans-serif';
+          ctx.textAlign = 'center';        
+          ctx.textBaseline = 'bottom';     
+
+          ctx.fillText(itiText, cx, cy);
+        }    
+  }
+],
   choices: 'NO_KEYS',
   trial_duration: ITI_MS,
   data: { trial_part: 'iti' },
   on_start: function (trial) {
     sizeToViewport(trial);
+    trialState.trialCount  = jsPsych.evaluateTimelineVariable('trialCount');
+    const curTrial = trialState.trialCount;
+    // If this is a new streak, draw the word "NEW"
+    if (curTrial % 6 === 1) {
+      trialState.keyword = 1;
+    } else {
+    // If mid-streak, draw "OLD"
+      trialState.keyword = 0;
+    }
   },
 };
 
