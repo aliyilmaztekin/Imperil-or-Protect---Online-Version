@@ -2842,10 +2842,10 @@ blocks.forEach((vars, k) => {
   if (trainVars.length) {
     timeline.push({
       timeline: [
+        iti,
         study,
         test,
         feedback,
-        iti,
       ],
       timeline_variables: trainVars,
     });
@@ -2853,8 +2853,8 @@ blocks.forEach((vars, k) => {
 
   if (mainVars.length) {
     if (startsMain) timeline.push(mainInstructions);
-    timeline.push({ timeline: [preTrial, attCheckAtStart, study, test,
-                           slowWarningIfTimedOut, attCheckAtEnd, iti],
+    timeline.push({ timeline: [preTrial, iti, attCheckAtStart, study, test,
+                           slowWarningIfTimedOut, attCheckAtEnd],
                 timeline_variables: mainVars });
   }
 
