@@ -826,6 +826,7 @@ function buildWorkbook(rows, jsPsych = null) {
     ['field', 'value'],
     ['participant_id', PARTICIPANT_ID],
     ['session', SESSION_ID],
+    ['run_id', RUN_ID],
     ['study_id', STUDY_ID],
     ['cond_number', COND_NUMBER],
     ['cond_source', COND_SOURCE],
@@ -900,10 +901,13 @@ function downloadText(text, filename, mime) {
  * DataPipe refuses to overwrite an existing file, so every call must use a
  * unique filename: participant + session + tag (training, block1, ..., final).
  */
+
+ const RUN_ID = Date.now().toString(36);
+
 async function postRows(rows, tag, jsPsych = null) {
   if (!DATAPIPE_ID || !rows.length) return { ok: false, skipped: true };
 
-  const base = `${PARTICIPANT_ID}_${SESSION_ID}_${tag}`;
+  const base = `${PARTICIPANT_ID}_${SESSION_ID}_${RUN_ID}_${tag}`;
   let endpoint, filename, data;
   try {
     data = XLSX.write(buildWorkbook(rows, jsPsych),
@@ -1279,8 +1283,6 @@ const attCheckAtEnd = {
   conditional_function: () => trialState.attCheckEnd === true
 };
 
-// Put this next to trialState
-const frameLog = { frames: [], drawn: {} };
 
 const study = {
   type: jsPsychPsychophysics,
@@ -1296,7 +1298,6 @@ const study = {
     
     { obj_type: 'manual', show_start_time: 800, show_end_time: 1200,
       drawFunc: function (s, canvas, ctx) {
-        frameLog.drawn.img1 = true;    
         const { cx, cy } = drawingBox(canvas, ctx);
         drawStim(ctx, trialState.stims[1], trialState.colors[1],
                 cx,
@@ -1306,27 +1307,14 @@ const study = {
 
     { obj_type: 'manual', show_start_time: 1800, show_end_time: 2200,
       drawFunc: function (s, canvas, ctx) {
-        frameLog.drawn.img2 = true;   
         const { cx, cy } = drawingBox(canvas, ctx);
         drawStim(ctx, trialState.stims[0], trialState.colors[0],
                 cx,
                 cy, imageScale, 0);
       }
     },
-
-    // Frame logger: must stay LAST so it runs after the images each frame.
-    // It draws nothing.
-    { obj_type: 'manual', show_start_time: 0,
-      drawFunc: function () {
-        frameLog.frames.push({
-          t: performance.now(),
-          img1: !!frameLog.drawn.img1,
-          img2: !!frameLog.drawn.img2,
-        });
-        frameLog.drawn = {};
-      }
-    },
   ],
+
   choices: 'NO_KEYS',
   trial_duration: 2200 + 600,
 
@@ -1339,10 +1327,6 @@ const study = {
   on_start: function (trial) {
     sizeToViewport(trial);
     const trialCount = jsPsych.evaluateTimelineVariable('trialCount');
-
-     frameLog.frames = [];          // reset for this trial
-    frameLog.drawn  = {};
-
 
     // Was previously referenced but never declared here, which threw a
     // ReferenceError at the bottom of this function.
@@ -1381,39 +1365,6 @@ const study = {
    */
   on_finish: function (data) {
     data.context_color = trialState.context;
-
-    const trialEnd = performance.now();
-    const f  = frameLog.frames;
-    const t0 = f[0].t;             // first frame of the trial = time 0
-
-    const firstOn = key => f.findIndex(fr => fr[key]);
-    const lastOn  = key => f.map(fr => fr[key]).lastIndexOf(true);
-    // Offset = first frame where the image is no longer drawn
-    const offT = key => (f[lastOn(key) + 1] ? f[lastOn(key) + 1].t : trialEnd) - t0;
-
-    const img1_on  = f[firstOn('img1')].t - t0;
-    const img1_off = offT('img1');
-    const img2_on  = f[firstOn('img2')].t - t0;
-    const img2_off = offT('img2');
-    const end      = trialEnd - t0;
-
-    const timing = {
-      img1_onset:       img1_on,
-      img1_duration:    img1_off - img1_on,
-      pre_img1_blank:   img1_on,              // trial start -> img1 onset
-      isi:              img2_on - img1_off,   // blank between the images
-      soa:              img2_on - img1_on,    // onset to onset
-      img2_onset:       img2_on,
-      img2_duration:    img2_off - img2_on,
-      post_img2_blank:  end - img2_off,       // img2 offset -> trial end
-      img1_frames:      f.filter(fr => fr.img1).length,
-      img2_frames:      f.filter(fr => fr.img2).length,
-      n_frames:         f.length,
-    };
-
-    Object.assign(data, timing);
-
-    console.log(`study trial ${data.trialCount}`, timing);
   }
 };
 
