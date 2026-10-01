@@ -20,7 +20,7 @@
     <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/plug-ins/jspsych-psychophysics-v.5.1.0/jspsych-psychophysics.js"></script>
 
     <!-- Import the color rotation code -->
-    <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/colorWheelTools/labrotate.js"></script>
+    <script src="https://aliyilmaztekin.github.io/Imperil-or-Protect---Online-Version/colorWheelTools/labrotate_wheel.js"></script>
 
     <!-- SheetJS, used to build the .xlsx files uploaded to OSF. Consider
          vendoring this file into your repo next to the other plug-ins: a CDN
@@ -145,6 +145,16 @@ const nSeries = nTrials/seriesLength;
 let breaksRemaining = nBlocks-1;   // or whatever drives the decision
 const nCols = 2;
 const LAB_CACHE  = 12;            // LabStim objects kept resident (~4 MB each)
+
+/*
+ * COLOUR WHEEL. Every object is placed on this CIELAB circle: the value in the
+ * condition matrix is now an ABSOLUTE wheel angle, not a rotation relative to
+ * the source image's own hue. WHEELS.zhangLuck is outside the sRGB gamut for
+ * ~200 of 360 degrees, so keep WHEELS.schurgin unless the monitor is calibrated.
+ * MATCH_LIGHTNESS moves each object's mean L* to the wheel's L*.
+ */
+const COLOR_WHEEL     = WHEELS.schurgin;
+const MATCH_LIGHTNESS = false;
 
 /*
  * MAIN-PHASE TIMEOUT WARNING.
@@ -404,7 +414,8 @@ function getLab(id) {
 
   const data = srcBitmaps.get(id);
   if (!data) throw new Error(`No source bitmap decoded for "${id}"`);
-  st = new LabStim(data.data, data.width, data.height);
+  st = new LabStim(data.data, data.width, data.height,
+                    { wheel: COLOR_WHEEL, matchLightness: MATCH_LIGHTNESS });
   labCache.set(id, st);
 
   while (labCache.size > LAB_CACHE) {
@@ -477,6 +488,8 @@ function greyCanvasFor(stim) {
 
   const buf   = new Uint8ClampedArray(stim.n * 4);
   const idx   = stim.idx, L = stim.L, alpha = stim.alpha;
+  // Same lightness shift render() applies, so grey -> colour has no L* step.
+  const dL    = stim.dL || 0;
 
   /*
    * With a* = b* = 0 the output depends on L* alone, so quantise L* and
@@ -487,7 +500,7 @@ function greyCanvasFor(stim) {
   const lut = new Map();
   for (let k = 0; k < idx.length; k++) {
     const p   = idx[k];
-    const key = Math.round(L[p] * 20);
+    const key = Math.round((L[p] + dL) * 20);
     let rgb = lut.get(key);
     if (!rgb) { rgb = labToRgb255(key / 20, 0, 0); lut.set(key, rgb); }
     const o = p << 2;
@@ -572,8 +585,10 @@ function drawColorWheel(ctx, cx, cy) {
   ctx.lineWidth = WHEEL_WIDTH;
   for (let i = 0; i < WHEEL_STEPS; i++) {
     const ang = i * step;
-    // Zhang & Luck (2008): L*=70, center (a*,b*)=(20,38), radius 60
-    ctx.strokeStyle = labToRgb(70, 20 + 60 * Math.cos(ang), 38 + 60 * Math.sin(ang));
+    // Same wheel and same Lab->RGB path as the stimuli. Canvas arcs run
+    // clockwise (y down), so -ang is the screen angle the tracker would see.
+    const [r, g, b] = wheelRgb255(thetaFromAngle(-ang * 180 / Math.PI), COLOR_WHEEL);
+    ctx.strokeStyle = `rgb(${r},${g},${b})`;
     ctx.beginPath();
     ctx.arc(cx, cy, demoWheelR, ang, ang + step * 1.5); // slight overlap hides seams
     ctx.stroke();
@@ -1186,7 +1201,7 @@ async function runExperiment() {
    */
   const trialState = {
     stims: null, pos: null, colors: null, context: null,
-    probeName: null, stimNames: null, studyColors: null
+    probeName: null, stimNames: null, studyColors: null, keyword: null
   };
 
 // The attention check requires the person to make a mouse click 
@@ -1837,9 +1852,9 @@ const iti = {
   stimuli: [{
     obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
     fill_color: greyBackground, show_start_time: 0
-  }
+  },
 
-  /*{
+  {
       obj_type: 'manual', 
       width: window.innerWidth, 
       height: window.innerHeight, 
@@ -1859,21 +1874,22 @@ const iti = {
 
           ctx.fillText(itiText, cx, cy);
         }    
-  }*/
+  }
 ],
   choices: 'NO_KEYS',
   trial_duration: ITI_MS,
   data: { trial_part: 'iti' },
   on_start: function (trial) {
     sizeToViewport(trial);
-    /*trialState.trialCount  = jsPsych.evaluateTimelineVariable('trialCount');
+    trialState.trialCount  = jsPsych.evaluateTimelineVariable('trialCount');
     const curTrial = trialState.trialCount;
     // If this is a new streak, draw the word "NEW"
     if (curTrial % 6 === 1) {
       trialState.keyword = 1;
     } else {
     // If mid-streak, draw "OLD"
-      trialState.keyword = 0;*/
+      trialState.keyword = 0;
+    }
   },
 };
 
