@@ -1067,10 +1067,10 @@ async function runExperiment() {
     const cols = COND_HAS_THETA_COL ? row.slice(0, 5).concat(row.slice(6)) : row;
     const condTheta = COND_HAS_THETA_COL ? row[5] : null;
 
-    const [rep, context, rep1color, novel, probe, checkTime] = cols;
+    const [rep, context, novel, rep1color, probe, checkTime] = cols;
 
     // Also get the stimulus names
-    const [rep1, novelStim] = imageMatrix[i];
+    const [novelStim, rep1] = imageMatrix[i];
 
     return {
         /*
@@ -1837,9 +1837,8 @@ const iti = {
   stimuli: [{
     obj_type: 'rect', width: window.innerWidth, height: window.innerHeight,
     fill_color: greyBackground, show_start_time: 0
-  }
-
-  /*{
+  },
+  {
       obj_type: 'manual', 
       width: window.innerWidth, 
       height: window.innerHeight, 
@@ -1859,24 +1858,24 @@ const iti = {
 
           ctx.fillText(itiText, cx, cy);
         }    
-  }*/
+  }
 ],
   choices: 'NO_KEYS',
   trial_duration: ITI_MS,
   data: { trial_part: 'iti' },
   on_start: function (trial) {
-    sizeToViewport(trial);
-    /*trialState.trialCount  = jsPsych.evaluateTimelineVariable('trialCount');
-    const curTrial = trialState.trialCount;
-    // If this is a new streak, draw the word "NEW"
-    if (curTrial % 6 === 1) {
-      trialState.keyword = 1;
-    } else {
-    // If mid-streak, draw "OLD"
-      trialState.keyword = 0;*/
-  },
+      sizeToViewport(trial);
+      trialState.trialCount  = jsPsych.evaluateTimelineVariable('trialCount');
+      const curTrial = trialState.trialCount;
+      // If this is a new streak, draw the word "NEW"
+      if (curTrial % 6 === 1) {
+        trialState.keyword = 1;
+      } else {
+      // If mid-streak, draw "OLD"
+        trialState.keyword = 0;
+    }
+  }
 };
-
   // Shown once, right after the last training trial.
   const mainInstructions = {
     type: jsPsychHtmlKeyboardResponse,
